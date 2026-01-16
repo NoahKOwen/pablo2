@@ -1,0 +1,363 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-1.1.x", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                       String             @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  email                    String             @unique(map: "User_email_unique") @db.VarChar
+  username                 String             @unique(map: "User_username_unique") @db.VarChar
+  passwordHash             String             @db.VarChar
+  referralCode             String             @unique(map: "User_referralCode_unique") @db.VarChar
+  referredBy               String?            @db.VarChar
+  emailVerified            Boolean            @default(false)
+  emailVerificationToken   String?            @db.VarChar
+  emailVerificationExpires DateTime?          @db.Timestamp(6)
+  isAdmin                  Boolean            @default(false)
+  xp                       Int                @default(0)
+  level                    Int                @default(1)
+  streak                   Int                @default(0)
+  lastCheckIn              DateTime?          @db.Timestamp(6)
+  createdAt                DateTime           @default(now()) @db.Timestamp(6)
+  updatedAt                DateTime           @default(now()) @updatedAt @db.Timestamp(6)
+  depositAddress           String?            @unique(map: "User_depositAddress_unique") @db.VarChar
+  derivationIndex          Int?
+  activities               Activity[]
+  announcements            Announcement[]
+  balance                  Balance?
+  DepositReport            DepositReport[]
+  linkedWallets            LinkedWallet[]
+  miningSessions           MiningSession[]
+  notifications            Notification[]
+  passwordResets           PasswordReset[]
+  pushSubscriptions        PushSubscription[]
+  referralsReceived        Referral[]         @relation("Referred")
+  referralsGiven           Referral[]         @relation("Referrer")
+  sessions                 Session[]
+  stakes                   Stake[]
+  transactions             Transaction[]
+  userAchievements         UserAchievement[]
+  userTasks                UserTask[]
+  walletNonces             WalletNonce[]
+}
+
+model Session {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  jwtId     String    @unique(map: "Session_jwtId_unique") @db.VarChar
+  userId    String    @db.VarChar
+  createdAt DateTime  @default(now()) @db.Timestamp(6)
+  revokedAt DateTime? @db.Timestamp(6)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "Session_userId_User_id_fk")
+
+  @@index([jwtId], map: "sessions_jwtId_idx")
+  @@index([userId], map: "sessions_userId_idx")
+}
+
+model Balance {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  userId          String   @unique(map: "Balance_userId_unique") @db.VarChar
+  xnrtBalance     Decimal  @default(0) @db.Decimal(38, 18)
+  stakingBalance  Decimal  @default(0) @db.Decimal(38, 18)
+  miningBalance   Decimal  @default(0) @db.Decimal(38, 18)
+  referralBalance Decimal  @default(0) @db.Decimal(38, 18)
+  totalEarned     Decimal  @default(0) @db.Decimal(38, 18)
+  createdAt       DateTime @default(now()) @db.Timestamp(6)
+  updatedAt       DateTime @default(now()) @updatedAt @db.Timestamp(6)
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "Balance_userId_User_id_fk")
+}
+
+model Stake {
+  id                         String    @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  userId                     String    @db.VarChar
+  tier                       String    @db.VarChar
+  amount                     Decimal   @db.Decimal(38, 18)
+  dailyRate                  Decimal   @db.Decimal(8, 6)
+  duration                   Int
+  startDate                  DateTime  @default(now()) @db.Timestamp(6)
+  endDate                    DateTime  @db.Timestamp(6)
+  totalProfit                Decimal   @default(0) @db.Decimal(38, 18)
+  lastProfitDate             DateTime? @db.Timestamp(6)
+  status                     String    @default("active") @db.VarChar
+  createdAt                  DateTime  @default(now()) @db.Timestamp(6)
+  isLoan                     Boolean   @default(false)
+  loanProgram                String?
+  minInvestUsdtPerReferral   Decimal   @default(50.0) @db.Decimal(38, 18)
+  requiredInvestingReferrals Int       @default(3)
+  requiredReferrals          Int       @default(10)
+  unlockMet                  Boolean   @default(false)
+  user                       User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "Stake_userId_User_id_fk")
+
+  @@index([status], map: "stakes_status_idx")
+  @@index([userId, createdAt], map: "stakes_userId_createdAt_idx")
+  @@index([userId], map: "stakes_userId_idx")
+}
+
+model MiningSession {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  userId          String    @db.VarChar
+  baseReward      Int       @default(10)
+  adBoostCount    Int       @default(0)
+  boostPercentage Int       @default(0)
+  finalReward     Int       @default(10)
+  startTime       DateTime  @default(now()) @db.Timestamp(6)
+  endTime         DateTime? @db.Timestamp(6)
+  nextAvailable   DateTime  @db.Timestamp(6)
+  status          String    @default("active") @db.VarChar
+  createdAt       DateTime  @default(now()) @db.Timestamp(6)
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "MiningSession_userId_User_id_fk")
+
+  @@index([status], map: "mining_sessions_status_idx")
+  @@index([userId], map: "mining_sessions_userId_idx")
+}
+
+model Referral {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  referrerId      String   @db.VarChar
+  referredUserId  String   @db.VarChar
+  level           Int
+  totalCommission Decimal  @default(0) @db.Decimal(38, 18)
+  createdAt       DateTime @default(now()) @db.Timestamp(6)
+  referredUser    User     @relation("Referred", fields: [referredUserId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "Referral_referredUserId_User_id_fk")
+  referrer        User     @relation("Referrer", fields: [referrerId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "Referral_referrerId_User_id_fk")
+
+  @@index([referredUserId], map: "referrals_referredUserId_idx")
+  @@index([referrerId], map: "referrals_referrerId_idx")
+}
+
+model Transaction {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  userId           String    @db.VarChar
+  type             String    @db.VarChar
+  amount           Decimal   @db.Decimal(38, 18)
+  usdtAmount       Decimal?  @db.Decimal(38, 18)
+  source           String?   @db.VarChar
+  walletAddress    String?
+  transactionHash  String?   @unique(map: "transactions_txhash_unique")
+  proofImageUrl    String?   @db.VarChar
+  status           String    @default("pending") @db.VarChar
+  adminNotes       String?
+  fee              Decimal?  @db.Decimal(38, 18)
+  netAmount        Decimal?  @db.Decimal(38, 18)
+  approvedBy       String?   @db.VarChar
+  approvedAt       DateTime? @db.Timestamp(6)
+  verified         Boolean   @default(false)
+  confirmations    Int       @default(0)
+  verificationData Json?
+  createdAt        DateTime  @default(now()) @db.Timestamp(6)
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "Transaction_userId_User_id_fk")
+
+  @@index([createdAt], map: "transactions_createdAt_idx")
+  @@index([status], map: "transactions_status_idx")
+  @@index([type], map: "transactions_type_idx")
+  @@index([userId, createdAt], map: "transactions_userId_createdAt_idx")
+  @@index([userId], map: "transactions_userId_idx")
+}
+
+model Task {
+  id           String     @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  title        String     @unique(map: "tasks_title_unique") @db.VarChar
+  description  String
+  xpReward     Int
+  xnrtReward   Decimal    @default(0) @db.Decimal(38, 18)
+  category     String     @db.VarChar
+  requirements String?
+  isActive     Boolean    @default(true)
+  createdAt    DateTime   @default(now()) @db.Timestamp(6)
+  userTasks    UserTask[]
+}
+
+model UserTask {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  userId      String    @db.VarChar
+  taskId      String    @db.VarChar
+  progress    Int       @default(0)
+  maxProgress Int       @default(1)
+  completed   Boolean   @default(false)
+  completedAt DateTime? @db.Timestamp(6)
+  createdAt   DateTime  @default(now()) @db.Timestamp(6)
+  task        Task      @relation(fields: [taskId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "UserTask_taskId_Task_id_fk")
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "UserTask_userId_User_id_fk")
+
+  @@unique([userId, taskId], map: "user_tasks_user_task_unique")
+  @@index([taskId], map: "user_tasks_taskId_idx")
+  @@index([userId], map: "user_tasks_userId_idx")
+}
+
+model Achievement {
+  id               String            @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  title            String            @unique(map: "achievements_title_unique") @db.VarChar
+  description      String
+  icon             String            @db.VarChar
+  category         String            @db.VarChar
+  requirement      Int
+  xpReward         Int
+  createdAt        DateTime          @default(now()) @db.Timestamp(6)
+  userAchievements UserAchievement[]
+}
+
+model UserAchievement {
+  id            String      @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  userId        String      @db.VarChar
+  achievementId String      @db.VarChar
+  unlockedAt    DateTime    @default(now()) @db.Timestamp(6)
+  claimed       Boolean     @default(false)
+  claimedAt     DateTime?   @db.Timestamp(6)
+  achievement   Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "UserAchievement_achievementId_Achievement_id_fk")
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "UserAchievement_userId_User_id_fk")
+
+  @@unique([userId, achievementId], map: "user_achievements_user_achievement_unique")
+  @@index([achievementId], map: "user_achievements_achievementId_idx")
+  @@index([userId], map: "user_achievements_userId_idx")
+}
+
+model Activity {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  userId      String   @db.VarChar
+  type        String   @db.VarChar
+  description String
+  metadata    String?  @db.VarChar
+  createdAt   DateTime @default(now()) @db.Timestamp(6)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "Activity_userId_User_id_fk")
+
+  @@index([createdAt], map: "activities_created_at_idx")
+  @@index([userId, createdAt], map: "activities_userId_createdAt_idx")
+  @@index([userId], map: "activities_user_id_idx")
+}
+
+model PasswordReset {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  token     String    @unique(map: "PasswordReset_token_unique") @db.VarChar
+  userId    String    @db.VarChar
+  expiresAt DateTime  @db.Timestamp(6)
+  usedAt    DateTime? @db.Timestamp(6)
+  createdAt DateTime  @default(now()) @db.Timestamp(6)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "PasswordReset_userId_User_id_fk")
+
+  @@index([token], map: "password_resets_token_idx")
+  @@index([userId], map: "password_resets_userId_idx")
+}
+
+model Notification {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  userId           String    @db.VarChar
+  type             String    @db.VarChar
+  title            String    @db.VarChar
+  message          String
+  metadata         String?   @db.VarChar
+  read             Boolean   @default(false)
+  deliveryAttempts Int?
+  deliveredAt      DateTime? @db.Timestamp(6)
+  lastAttemptAt    DateTime? @db.Timestamp(6)
+  pendingPush      Boolean   @default(false)
+  pushError        String?
+  createdAt        DateTime  @default(now()) @db.Timestamp(6)
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "Notification_userId_User_id_fk")
+
+  @@index([createdAt], map: "notifications_created_at_idx")
+  @@index([pendingPush], map: "notifications_pending_push_idx")
+  @@index([read], map: "notifications_read_idx")
+  @@index([userId], map: "notifications_user_id_idx")
+}
+
+model PushSubscription {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  userId         String    @db.VarChar
+  endpoint       String
+  p256dh         String
+  auth           String
+  expirationTime DateTime? @db.Timestamp(6)
+  enabled        Boolean   @default(true)
+  createdAt      DateTime  @default(now()) @db.Timestamp(6)
+  updatedAt      DateTime  @default(now()) @updatedAt @db.Timestamp(6)
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "PushSubscription_userId_User_id_fk")
+
+  @@unique([userId, endpoint], map: "push_subscriptions_user_endpoint_unique")
+  @@index([endpoint], map: "push_subscriptions_endpoint_idx")
+  @@index([userId], map: "push_subscriptions_user_id_idx")
+}
+
+model Announcement {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  title     String    @db.VarChar(255)
+  content   String
+  type      String    @default("info") @db.VarChar
+  isActive  Boolean   @default(true)
+  createdBy String    @db.VarChar
+  createdAt DateTime  @default(now()) @db.Timestamp(6)
+  expiresAt DateTime? @db.Timestamp(6)
+  creator   User      @relation(fields: [createdBy], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "Announcement_createdBy_User_id_fk")
+
+  @@index([createdAt], map: "announcements_createdAt_idx")
+  @@index([isActive], map: "announcements_isActive_idx")
+}
+
+model LinkedWallet {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  userId    String   @db.VarChar
+  address   String   @unique(map: "LinkedWallet_address_unique") @db.VarChar
+  createdAt DateTime @default(now()) @db.Timestamp(6)
+  active    Boolean  @default(true)
+  linkedAt  DateTime @default(now()) @db.Timestamp(6)
+  signature String?  @db.VarChar
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "LinkedWallet_userId_User_id_fk")
+
+  @@index([userId], map: "linked_wallets_userId_idx")
+}
+
+model WalletNonce {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  userId        String    @db.VarChar
+  walletAddress String    @db.VarChar
+  nonce         Int       @default(0)
+  updatedAt     DateTime  @default(now()) @updatedAt @db.Timestamp(6)
+  expiresAt     DateTime? @db.Timestamp(6)
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "WalletNonce_userId_User_id_fk")
+
+  @@unique([userId, walletAddress], map: "WalletNonce_userId_walletAddress_unique")
+  @@index([userId], map: "wallet_nonces_userId_idx")
+}
+
+model ScannerState {
+  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  scannerId          String   @unique(map: "ScannerState_scannerId_unique") @db.VarChar
+  lastProcessedBlock Int
+  updatedAt          DateTime @default(now()) @updatedAt @db.Timestamp(6)
+}
+
+model DepositReport {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  txHash      String    @unique(map: "DepositReport_txHash_unique") @db.VarChar
+  amount      Decimal   @db.Decimal(38, 18)
+  toAddress   String    @db.VarChar
+  status      String    @default("pending") @db.VarChar
+  createdAt   DateTime  @default(now()) @db.Timestamp(6)
+  processedAt DateTime? @db.Timestamp(6)
+  resolvedAt  DateTime? @db.Timestamp(6)
+  userId      String?   @db.VarChar
+  notes       String?   @db.VarChar
+  User        User?     @relation(fields: [userId], references: [id], onUpdate: NoAction)
+
+  @@index([toAddress], map: "deposit_reports_toAddress_idx")
+  @@index([status], map: "deposit_reports_status_idx")
+  @@index([userId])
+}
+
+model UnmatchedDeposit {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  txHash        String   @unique(map: "UnmatchedDeposit_txHash_unique") @db.VarChar
+  amount        Decimal  @db.Decimal(38, 18)
+  toAddress     String   @db.VarChar
+  reason        String   @db.VarChar
+  resolved      Boolean  @default(false)
+  createdAt     DateTime @default(now()) @db.Timestamp(6)
+  confirmations Int?     @default(0)
+  fromAddress   String?  @db.VarChar
+
+  @@index([toAddress], map: "unmatched_deposits_toAddress_idx")
+  @@index([resolved], map: "unmatched_deposits_resolved_idx")
+}
