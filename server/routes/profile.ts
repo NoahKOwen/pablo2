@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from "express";
 import { storage } from "../storage";
 import { requireAuth, validateCSRF } from "../auth/middleware";
 import { prisma } from "./shared";
+import { Prisma } from "../db/client";
 
 const router = Router();
 
@@ -46,64 +47,87 @@ export const checkinRouter = Router();
 checkinRouter.post("/", requireAuth, validateCSRF, async (req: Request, res: Response) => {
   try {
     const userId = req.authUser!.id;
-
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const user = await storage.getUser(userId);
-    if (!user) return res.status(404).json({ message: "User not found" });
-
-    const lastCheckIn = user.lastCheckIn ? new Date(user.lastCheckIn) : null;
-    const lastCheckInDay = lastCheckIn
-      ? new Date(
-          lastCheckIn.getFullYear(),
-          lastCheckIn.getMonth(),
-          lastCheckIn.getDate()
-        )
-      : null;
     const yesterday = new Date(today);
     yesterday.setDate(yesterday.getDate() - 1);
 
-    let newStreak = 1;
-    if (lastCheckInDay && lastCheckInDay.getTime() === yesterday.getTime()) {
-      newStreak = (user.streak || 0) + 1;
-    }
+    const result = await prisma.$transaction(async (tx: any) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"checkin:" + userId}))`;
 
-    const streakReward = Math.min(newStreak * 10, 100);
-    const xpReward = Math.min(newStreak * 5, 50);
+      const user = await tx.user.findUnique({ where: { id: userId } });
+      if (!user) throw new Error("USER_NOT_FOUND");
 
-    if (lastCheckIn && lastCheckInDay && lastCheckInDay.getTime() === today.getTime()) {
-      return res.status(400).json({ message: "Already checked in today" });
-    }
+      const lastCheckIn = user.lastCheckIn ? new Date(user.lastCheckIn) : null;
+      const lastCheckInDay = lastCheckIn
+        ? new Date(
+            lastCheckIn.getFullYear(),
+            lastCheckIn.getMonth(),
+            lastCheckIn.getDate(),
+          )
+        : null;
 
-    await storage.updateUser(userId, {
-      lastCheckIn: now,
-      streak: newStreak,
-      xp: (user.xp || 0) + xpReward,
-    });
+      if (lastCheckInDay && lastCheckInDay.getTime() === today.getTime()) {
+        throw new Error("ALREADY_CHECKED_IN");
+      }
 
-    const balance = await storage.getBalance(userId);
-    if (balance) {
-      await storage.updateBalance(userId, {
-        xnrtBalance: (parseFloat(balance.xnrtBalance) + streakReward).toString(),
-        totalEarned: (parseFloat(balance.totalEarned) + streakReward).toString(),
+      let newStreak = 1;
+      if (lastCheckInDay && lastCheckInDay.getTime() === yesterday.getTime()) {
+        newStreak = (user.streak || 0) + 1;
+      }
+
+      const streakReward = Math.min(newStreak * 10, 100);
+      const xpReward = Math.min(newStreak * 5, 50);
+      const rewardDec = new Prisma.Decimal(streakReward);
+
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          lastCheckIn: now,
+          streak: newStreak,
+          xp: { increment: xpReward },
+        },
       });
-    }
 
-    await storage.createActivity({
-      userId,
-      type: "daily_checkin",
-      description: `Day ${newStreak} streak! Earned ${streakReward} XNRT and ${xpReward} XP`,
+      await tx.balance.upsert({
+        where: { userId },
+        create: {
+          userId,
+          xnrtBalance: rewardDec,
+          totalEarned: rewardDec,
+        },
+        update: {
+          xnrtBalance: { increment: rewardDec },
+          totalEarned: { increment: rewardDec },
+        },
+      });
+
+      await tx.activity.create({
+        data: {
+          userId,
+          type: "daily_checkin",
+          description: `Day ${newStreak} streak! Earned ${streakReward} XNRT and ${xpReward} XP`,
+        },
+      });
+
+      return { newStreak, streakReward, xpReward };
     });
 
     await storage.checkAndUnlockAchievements(userId);
 
     res.json({
-      streak: newStreak,
-      xnrtReward: streakReward,
-      xpReward,
-      message: `Day ${newStreak} check-in complete!`,
+      streak: result.newStreak,
+      xnrtReward: result.streakReward,
+      xpReward: result.xpReward,
+      message: `Day ${result.newStreak} check-in complete!`,
     });
-  } catch (error) {
+  } catch (error: any) {
+    if (error?.message === "USER_NOT_FOUND") {
+      return res.status(404).json({ message: "User not found" });
+    }
+    if (error?.message === "ALREADY_CHECKED_IN") {
+      return res.status(409).json({ message: "Already checked in today" });
+    }
     console.error("Error during check-in:", error);
     res.status(500).json({ message: "Failed to check in" });
   }

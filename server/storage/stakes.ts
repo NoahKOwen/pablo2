@@ -33,6 +33,7 @@ export function createStakeMethods(prisma: PrismaClient, storage: any) {
           totalProfit: new Prisma.Decimal(stake.totalProfit || "0"),
           lastProfitDate: stake.lastProfitDate,
           status: stake.status || "active",
+          isLoan: stake.isLoan ?? false,
           loanProgram: stake.loanProgram,
           unlockMet: stake.unlockMet ?? false,
           requiredReferrals: stake.requiredReferrals,
@@ -109,111 +110,103 @@ export function createStakeMethods(prisma: PrismaClient, storage: any) {
 
       const now = new Date();
       const DAY_MS = 24 * 60 * 60 * 1000;
+      const usersWithRewards = new Set<string>();
 
-      // Group by user so we can call achievements once per user
-      const stakesByUser = new Map<string, Stake[]>();
-      for (const stake of activeStakes) {
-        const list = stakesByUser.get(stake.userId) ?? [];
-        list.push(stake);
-        stakesByUser.set(stake.userId, list);
-      }
+      for (const candidate of activeStakes) {
+        const outcome = await prisma.$transaction(async (tx: any) => {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"stake:" + candidate.id}))`;
 
-      for (const [userId, userStakes] of stakesByUser) {
-        let anyProfitCredited = false;
+          // Re-read under the lock so a second worker cannot calculate from a
+          // stale lastProfitDate/totalProfit snapshot.
+          const stake = await tx.stake.findUnique({ where: { id: candidate.id } });
+          if (!stake || stake.status !== "active") return null;
 
-        for (const stake of userStakes) {
           const lastProfitDate = new Date(stake.lastProfitDate || stake.startDate);
           const endDate = new Date(stake.endDate);
-
-          const daysSinceLastProfit = Math.floor(
-            (now.getTime() - lastProfitDate.getTime()) / DAY_MS
-          );
-          const daysUntilEnd = Math.floor(
-            (endDate.getTime() - lastProfitDate.getTime()) / DAY_MS
-          );
+          const effectiveNow = now > endDate ? endDate : now;
 
           const creditedDays = Math.max(
             0,
-            Math.min(daysSinceLastProfit, daysUntilEnd)
+            Math.floor((effectiveNow.getTime() - lastProfitDate.getTime()) / DAY_MS),
           );
 
+          let profitToAdd = 0;
+          let newLastProfitDate = stake.lastProfitDate;
+
           if (creditedDays >= 1) {
-            const amountNum = parseFloat(stake.amount);
-            const dailyRateNum = parseFloat(stake.dailyRate);
-            const totalProfitNum = parseFloat(stake.totalProfit);
-
+            const amountNum = Number(stake.amount);
+            const dailyRateNum = Number(stake.dailyRate);
             const dailyProfit = (amountNum * dailyRateNum) / 100;
-            const profitToAdd = dailyProfit * creditedDays;
-            const newTotalProfit = totalProfitNum + profitToAdd;
+            profitToAdd = dailyProfit * creditedDays;
 
-            const calculatedLastProfitDate = new Date(
-              lastProfitDate.getTime() + creditedDays * DAY_MS
-            );
-            const newLastProfitDate =
-              calculatedLastProfitDate > endDate ? endDate : calculatedLastProfitDate;
+            const calculated = new Date(lastProfitDate.getTime() + creditedDays * DAY_MS);
+            newLastProfitDate = calculated > endDate ? endDate : calculated;
 
-            await storage.updateStake(stake.id, {
-              totalProfit: newTotalProfit.toString(),
-              lastProfitDate: newLastProfitDate,
-            });
-
-            const balance = await storage.getBalance(stake.userId);
-            if (balance) {
-              await storage.updateBalance(stake.userId, {
-                stakingBalance: (
-                  parseFloat(balance.stakingBalance) + profitToAdd
-                ).toString(),
-                totalEarned: (
-                  parseFloat(balance.totalEarned) + profitToAdd
-                ).toString(),
-              });
-            }
-
-            await storage.createActivity({
-              userId: stake.userId,
-              type: "staking_reward",
-              description: `Earned ${profitToAdd.toFixed(
-                2
-              )} XNRT from staking (${creditedDays} day${
-                creditedDays > 1 ? "s" : ""
-              })`,
-            });
-
-            const { notifyUser } = await import("../notifications");
-            void notifyUser(stake.userId, {
-              type: "staking_reward",
-              title: "💎 Staking Rewards!",
-              message: `You earned ${profitToAdd.toFixed(
-                2
-              )} XNRT from ${creditedDays} day${
-                creditedDays > 1 ? "s" : ""
-              } of staking`,
-              url: "/staking",
-              metadata: {
-                amount: profitToAdd.toString(),
-                days: creditedDays,
-                stakeId: stake.id,
+            await tx.stake.update({
+              where: { id: stake.id },
+              data: {
+                totalProfit: { increment: new Prisma.Decimal(profitToAdd) },
+                lastProfitDate: newLastProfitDate,
+                ...(now >= endDate ? { status: "completed" } : {}),
               },
-            }).catch((err: unknown) => {
-              console.error(
-                "Error sending staking reward notification (non-blocking):",
-                err
-              );
             });
 
-            anyProfitCredited = true;
-          }
+            await tx.balance.upsert({
+              where: { userId: stake.userId },
+              create: {
+                userId: stake.userId,
+                stakingBalance: new Prisma.Decimal(profitToAdd),
+                totalEarned: new Prisma.Decimal(profitToAdd),
+              },
+              update: {
+                stakingBalance: { increment: new Prisma.Decimal(profitToAdd) },
+                totalEarned: { increment: new Prisma.Decimal(profitToAdd) },
+              },
+            });
 
-          if (now >= new Date(stake.endDate)) {
-            await storage.updateStake(stake.id, {
-              status: "completed",
+            await tx.activity.create({
+              data: {
+                userId: stake.userId,
+                type: "staking_reward",
+                description: `Earned ${profitToAdd.toFixed(2)} XNRT from staking (${creditedDays} day${creditedDays > 1 ? "s" : ""})`,
+              },
+            });
+          } else if (now >= endDate) {
+            await tx.stake.update({
+              where: { id: stake.id },
+              data: { status: "completed" },
             });
           }
-        }
 
-        if (anyProfitCredited) {
-          await storage.checkAndUnlockAchievements(userId);
-        }
+          return {
+            userId: stake.userId,
+            stakeId: stake.id,
+            creditedDays,
+            profitToAdd,
+          };
+        });
+
+        if (!outcome || outcome.profitToAdd <= 0) continue;
+
+        usersWithRewards.add(outcome.userId);
+        const { notifyUser } = await import("../notifications");
+        void notifyUser(outcome.userId, {
+          type: "staking_reward",
+          title: "💎 Staking Rewards!",
+          message: `You earned ${outcome.profitToAdd.toFixed(2)} XNRT from ${outcome.creditedDays} day${outcome.creditedDays > 1 ? "s" : ""} of staking`,
+          url: "/staking",
+          metadata: {
+            amount: outcome.profitToAdd.toString(),
+            days: outcome.creditedDays,
+            stakeId: outcome.stakeId,
+          },
+        }).catch((err: unknown) => {
+          console.error("Error sending staking reward notification (non-blocking):", err);
+        });
+      }
+
+      for (const userId of usersWithRewards) {
+        await storage.checkAndUnlockAchievements(userId);
       }
     },
   };

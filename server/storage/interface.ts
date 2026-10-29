@@ -60,7 +60,11 @@ export interface IStorage {
   getReferralsByReferrer(referrerId: string): Promise<Referral[]>;
   createReferral(referral: InsertReferral): Promise<Referral>;
   updateReferral(id: string, updates: Partial<Referral>): Promise<Referral>;
-  distributeReferralCommissions(userId: string, amount: number): Promise<void>;
+  distributeReferralCommissions(
+    userId: string,
+    amount: number,
+    sourceTransactionId: string,
+  ): Promise<void>;
   getReferrerChain(userId: string, maxLevels: number): Promise<User[]>;
 
   getTransactionsByUser(

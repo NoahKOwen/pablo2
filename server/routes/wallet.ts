@@ -211,6 +211,23 @@ router.post("/report-deposit", requireAuth, validateCSRF, async (req, res) => {
       where: { transactionHash },
     });
     if (existingTx) {
+      if (
+        existingTx.type === "deposit" &&
+        existingTx.status === "approved" &&
+        existingTx.userId === userId &&
+        !existingTx.referralProcessed
+      ) {
+        await storage.distributeReferralCommissions(
+          userId,
+          Number(existingTx.amount),
+          existingTx.id,
+        );
+        return res.json({
+          message: "Deposit was already credited; referral payout retry completed",
+          alreadyProcessed: true,
+          referralRetry: true,
+        });
+      }
       return res.status(409).json({
         message: "This deposit has already been credited",
         alreadyProcessed: true,
@@ -269,8 +286,8 @@ router.post("/report-deposit", requireAuth, validateCSRF, async (req, res) => {
     const xnrtAmount = netUsdt * xnrtRate;
 
     if (linkedWallet) {
-      await prisma.$transaction(async (tx: any) => {
-        await tx.transaction.create({
+      const createdDeposit = await prisma.$transaction(async (tx: any) => {
+        const created = await tx.transaction.create({
           data: {
             userId,
             type: "deposit",
@@ -302,20 +319,29 @@ router.post("/report-deposit", requireAuth, validateCSRF, async (req, res) => {
             totalEarned: { increment: new Prisma.Decimal(xnrtAmount) },
           },
         });
+
+        await tx.activity.create({
+          data: {
+            userId,
+            type: "deposit_approved",
+            description: `Deposit of ${xnrtAmount.toLocaleString()} XNRT approved via auto-detection`,
+          },
+        });
+
+        return created;
       });
 
       console.log(`[ReportDeposit] Auto-credited ${xnrtAmount} XNRT to user ${userId}`);
 
+      await storage.distributeReferralCommissions(
+        userId,
+        xnrtAmount,
+        createdDeposit.id,
+      );
+
       const { sendDepositNotification } = await import("../services/depositScanner");
       void sendDepositNotification(userId, xnrtAmount, transactionHash).catch((err) => {
         console.error("[ReportDeposit] Notification error:", err);
-      });
-
-      await storage.distributeReferralCommissions(userId, xnrtAmount);
-      await storage.createActivity({
-        userId,
-        type: "deposit_approved",
-        description: `Deposit of ${xnrtAmount.toLocaleString()} XNRT approved via auto-detection`,
       });
 
       return res.json({

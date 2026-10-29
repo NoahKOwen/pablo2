@@ -125,6 +125,7 @@ model Referral {
   referredUser    User     @relation("Referred", fields: [referredUserId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "Referral_referredUserId_User_id_fk")
   referrer        User     @relation("Referrer", fields: [referrerId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "Referral_referrerId_User_id_fk")
 
+  @@unique([referrerId, referredUserId, level], map: "referrals_referrer_referred_level_unique")
   @@index([referredUserId], map: "referrals_referredUserId_idx")
   @@index([referrerId], map: "referrals_referrerId_idx")
 }
@@ -148,6 +149,8 @@ model Transaction {
   verified         Boolean   @default(false)
   confirmations    Int       @default(0)
   verificationData Json?
+  fundsReserved     Boolean   @default(false)
+  referralProcessed Boolean   @default(false)
   createdAt        DateTime  @default(now()) @db.Timestamp(6)
   user             User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "Transaction_userId_User_id_fk")
 
@@ -156,6 +159,22 @@ model Transaction {
   @@index([type], map: "transactions_type_idx")
   @@index([userId, createdAt], map: "transactions_userId_createdAt_idx")
   @@index([userId], map: "transactions_userId_idx")
+}
+
+model ReferralCommission {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  sourceTransactionId String   @db.VarChar
+  beneficiaryUserId   String   @db.VarChar
+  referredUserId      String   @db.VarChar
+  level               Int
+  amount              Decimal  @db.Decimal(38, 18)
+  isFallback          Boolean  @default(false)
+  createdAt           DateTime @default(now()) @db.Timestamp(6)
+
+  @@unique([sourceTransactionId, level], map: "referral_commission_source_level_unique")
+  @@index([beneficiaryUserId], map: "referral_commissions_beneficiary_idx")
+  @@index([referredUserId], map: "referral_commissions_referred_user_idx")
+  @@index([sourceTransactionId], map: "referral_commissions_source_transaction_idx")
 }
 
 model Task {

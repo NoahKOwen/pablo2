@@ -53,7 +53,6 @@ router.post("/claim", requireAuth, validateCSRF, async (req, res) => {
           tier: tierKey,
           isLoan: true,
           loanProgram: tierKey,
-          status: { in: ["active", "completed"] },
         },
       });
 
@@ -133,7 +132,6 @@ router.get("/status", requireAuth, async (req, res) => {
         tier: TRUST_LOAN_CONFIG.programKey,
         isLoan: true,
         loanProgram: TRUST_LOAN_CONFIG.programKey,
-        status: { in: ["active", "completed"] },
       },
       orderBy: { createdAt: "desc" },
     });
@@ -142,6 +140,7 @@ router.get("/status", requireAuth, async (req, res) => {
 
     return res.json({
       hasLoanStake: Boolean(loan),
+      hasClaimedEver: Boolean(loan),
       stake: loan ?? null,
       directCount,
       investingCount,

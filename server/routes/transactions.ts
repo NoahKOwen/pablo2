@@ -3,6 +3,7 @@ import { Router } from "express";
 import { storage } from "../storage";
 import { requireAuth, validateCSRF } from "../auth/middleware";
 import { prisma } from "./shared";
+import { Prisma } from "../db/client";
 
 const router = Router();
 
@@ -133,32 +134,25 @@ router.post("/withdrawal", requireAuth, validateCSRF, async (req, res) => {
     const netAmount = withdrawAmount - fee;
     const usdtAmount = netAmount / 100;
 
-    const balance = await storage.getBalance(userId);
-    if (!balance) {
-      return res.status(404).json({ message: "Balance not found" });
-    }
+    // Locked staking principal/rewards must be released only through the
+    // staking maturity flow. Generic withdrawals are limited to genuinely
+    // withdrawable buckets.
+    const sourceBalanceKey =
+      source === "main"
+        ? "xnrtBalance"
+        : source === "mining"
+          ? "miningBalance"
+          : source === "referral"
+            ? "referralBalance"
+            : null;
 
-    let availableBalance = 0;
-
-    switch (source) {
-      case "main":
-        availableBalance = parseFloat(balance.xnrtBalance || "0");
-        break;
-      case "staking":
-        availableBalance = parseFloat(balance.stakingBalance || "0");
-        break;
-      case "mining":
-        availableBalance = parseFloat(balance.miningBalance || "0");
-        break;
-      case "referral":
-        availableBalance = parseFloat(balance.referralBalance || "0");
-        break;
-      default:
-        return res.status(400).json({ message: "Invalid source" });
-    }
-
-    if (withdrawAmount > availableBalance) {
-      return res.status(400).json({ message: "Insufficient balance" });
+    if (!sourceBalanceKey) {
+      return res.status(400).json({
+        message:
+          source === "staking"
+            ? "Staking funds are locked and must be withdrawn from the staking page after maturity"
+            : "Invalid source",
+      });
     }
 
     if (source === "referral" && withdrawAmount < 5000) {
@@ -173,20 +167,47 @@ router.post("/withdrawal", requireAuth, validateCSRF, async (req, res) => {
       });
     }
 
-    const transaction = await storage.createTransaction({
-      userId,
-      type: "withdrawal",
-      amount: withdrawAmount.toString(),
-      usdtAmount: usdtAmount.toString(),
-      source,
-      walletAddress,
-      status: "pending",
-      fee: fee.toString(),
-      netAmount: netAmount.toString(),
+    const amountDec = new Prisma.Decimal(withdrawAmount);
+
+    // Reserve funds by removing them from the available source balance in the
+    // same transaction that creates the pending withdrawal. A rejection will
+    // refund this reservation; approval only finalizes it.
+    const transaction = await prisma.$transaction(async (tx: any) => {
+      const reserve = await tx.balance.updateMany({
+        where: {
+          userId,
+          [sourceBalanceKey]: { gte: amountDec },
+        },
+        data: {
+          [sourceBalanceKey]: { decrement: amountDec },
+        },
+      });
+
+      if (reserve.count !== 1) {
+        throw new Error("INSUFFICIENT_BALANCE");
+      }
+
+      return tx.transaction.create({
+        data: {
+          userId,
+          type: "withdrawal",
+          amount: amountDec,
+          usdtAmount: new Prisma.Decimal(usdtAmount),
+          source,
+          walletAddress,
+          status: "pending",
+          fee: new Prisma.Decimal(fee),
+          netAmount: new Prisma.Decimal(netAmount),
+          fundsReserved: true,
+        },
+      });
     });
 
     res.json(transaction);
-  } catch (error) {
+  } catch (error: any) {
+    if (error?.message === "INSUFFICIENT_BALANCE") {
+      return res.status(400).json({ message: "Insufficient balance" });
+    }
     console.error("Error creating withdrawal:", error);
     res.status(500).json({ message: "Failed to create withdrawal" });
   }

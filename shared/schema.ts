@@ -196,6 +196,11 @@ export const referrals = pgTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => [
+    unique("referrals_referrer_referred_level_unique").on(
+      table.referrerId,
+      table.referredUserId,
+      table.level,
+    ),
     index("referrals_referrerId_idx").on(table.referrerId),
     index("referrals_referredUserId_idx").on(table.referredUserId),
   ],
@@ -225,6 +230,8 @@ export const transactions = pgTable(
     verified: boolean("verified").default(false).notNull(),
     confirmations: integer("confirmations").default(0).notNull(),
     verificationData: jsonb("verificationData"),
+    fundsReserved: boolean("fundsReserved").default(false).notNull(),
+    referralProcessed: boolean("referralProcessed").default(false).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => [
@@ -237,6 +244,33 @@ export const transactions = pgTable(
       table.createdAt,
     ),
     unique("transactions_txhash_unique").on(table.transactionHash),
+  ],
+);
+
+// Idempotency ledger for referral commissions. Prisma migrations remain the
+// schema authority; this mirror keeps the shared Drizzle model from drifting.
+export const referralCommissions = pgTable(
+  "ReferralCommission",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    sourceTransactionId: varchar("sourceTransactionId").notNull(),
+    beneficiaryUserId: varchar("beneficiaryUserId").notNull(),
+    referredUserId: varchar("referredUserId").notNull(),
+    level: integer("level").notNull(),
+    amount: decimal("amount", { precision: 38, scale: 18 }).notNull(),
+    isFallback: boolean("isFallback").default(false).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => [
+    unique("referral_commission_source_level_unique").on(
+      table.sourceTransactionId,
+      table.level,
+    ),
+    index("referral_commissions_beneficiary_idx").on(table.beneficiaryUserId),
+    index("referral_commissions_referred_user_idx").on(table.referredUserId),
+    index("referral_commissions_source_transaction_idx").on(
+      table.sourceTransactionId,
+    ),
   ],
 );
 
@@ -764,6 +798,8 @@ export const insertTransactionSchema = createInsertSchema(transactions).omit({
   createdAt: true,
 });
 export type InsertTransaction = z.infer<typeof insertTransactionSchema>;
+
+export type ReferralCommission = typeof referralCommissions.$inferSelect;
 
 export type Task = typeof tasks.$inferSelect;
 export type InsertTask = typeof tasks.$inferInsert;

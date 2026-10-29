@@ -128,6 +128,14 @@ export function createTransactionMethods(prisma: PrismaClient) {
         data.verificationData = transaction.verificationData;
       }
 
+      if (transaction.fundsReserved !== undefined) {
+        data.fundsReserved = transaction.fundsReserved;
+      }
+
+      if (transaction.referralProcessed !== undefined) {
+        data.referralProcessed = transaction.referralProcessed;
+      }
+
       const newTransaction = await prisma.transaction.create({ data });
       return convertPrismaTransaction(newTransaction);
     },
@@ -195,6 +203,14 @@ export function createTransactionMethods(prisma: PrismaClient) {
         updates.verificationData !== null
       ) {
         data.verificationData = updates.verificationData;
+      }
+
+      if (updates.fundsReserved !== undefined) {
+        data.fundsReserved = updates.fundsReserved;
+      }
+
+      if (updates.referralProcessed !== undefined) {
+        data.referralProcessed = updates.referralProcessed;
       }
 
       const transaction = await prisma.transaction.update({

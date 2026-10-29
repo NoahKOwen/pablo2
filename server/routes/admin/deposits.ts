@@ -28,6 +28,88 @@ const toFloat = (v: any): number => {
   return Number(v);
 };
 
+async function approvePendingDeposit(params: {
+  deposit: any;
+  adminUserId: string;
+  notes?: string;
+  force?: boolean;
+}) {
+  const { deposit, adminUserId, notes, force = false } = params;
+
+  let override = false;
+
+  await prismaAny.$transaction(async (tx: any) => {
+    // Re-read current verification/status inside the transaction. A stale UI or
+    // concurrent verifier must never turn a normal approval into an implicit
+    // override.
+    const current = await tx.transaction.findUnique({ where: { id: deposit.id } });
+    if (!current || current.type !== "deposit") {
+      throw new Error("DEPOSIT_ALREADY_PROCESSED");
+    }
+    if (!current.verified && !force) {
+      throw new Error("DEPOSIT_NOT_VERIFIED");
+    }
+    override = !current.verified && force;
+
+    // State transition first: only one concurrent approve/reject path wins. If
+    // this is not an explicit force approval, verified=true is part of the
+    // atomic predicate too.
+    const claimed = await tx.transaction.updateMany({
+      where: {
+        id: current.id,
+        type: "deposit",
+        status: "pending",
+        ...(force ? {} : { verified: true }),
+      },
+      data: {
+        status: "approved",
+        adminNotes: notes ?? current.adminNotes,
+        approvedBy: adminUserId,
+        approvedAt: new Date(),
+        verificationData: current.verificationData ?? undefined,
+      },
+    });
+
+    if (claimed.count !== 1) {
+      throw new Error("DEPOSIT_ALREADY_PROCESSED");
+    }
+
+    const amountDec = new DecimalCtor(current.amount);
+    await tx.balance.upsert({
+      where: { userId: current.userId },
+      create: {
+        userId: current.userId,
+        xnrtBalance: amountDec,
+        totalEarned: amountDec,
+      },
+      update: {
+        xnrtBalance: { increment: amountDec },
+        totalEarned: { increment: amountDec },
+      },
+    });
+
+    await tx.activity.create({
+      data: {
+        userId: current.userId,
+        type: "deposit_approved",
+        description: `Deposit of ${toFloat(current.amount).toLocaleString()} XNRT approved${notes ? ` - ${notes}` : ""}`,
+      },
+    });
+
+    if (override) {
+      await tx.activity.create({
+        data: {
+          userId: adminUserId,
+          type: "ADMIN_DEPOSIT_OVERRIDE",
+          description: `Force-approved unverified deposit ${current.id} for user ${current.userId}`,
+        },
+      });
+    }
+  });
+
+  return { override };
+}
+
 router.get("/pending", requireAuth, requireAdmin, async (_req, res) => {
   try {
     const pendingDeposits = await storage.getPendingTransactions("deposit");
@@ -102,59 +184,37 @@ router.post(
         return res.status(404).json({ message: "Deposit not found" });
       }
 
-      if (deposit.status === "approved" || deposit.status === "rejected") {
-        return res.status(400).json({ message: "Deposit already processed" });
+      if (deposit.status === "rejected") {
+        return res.status(409).json({ message: "Deposit already rejected" });
       }
 
-      const override = !deposit.verified || !!force;
-
-      await prismaAny.$transaction(async (tx: any) => {
-        const amountDec = new DecimalCtor(deposit.amount);
-
-        await tx.balance.upsert({
-          where: { userId: deposit.userId },
-          create: {
-            userId: deposit.userId,
-            xnrtBalance: amountDec,
-            totalEarned: amountDec,
-          },
-          update: {
-            xnrtBalance: { increment: amountDec },
-            totalEarned: { increment: amountDec },
-          },
-        });
-
-        await tx.transaction.update({
-          where: { id },
-          data: {
-            status: "approved",
-            adminNotes: notes ?? deposit.adminNotes,
-            approvedBy: req.authUser!.id,
-            approvedAt: new Date(),
-            verificationData: deposit.verificationData ?? undefined,
-          },
-        });
-
-        if (override) {
-          await tx.activity.create({
-            data: {
-              userId: req.authUser!.id,
-              type: "ADMIN_DEPOSIT_OVERRIDE",
-              description: `Force-approved deposit ${id} for user ${deposit.userId} (scanner: ${
-                deposit.verified ? "verified" : "failed/unverified"
-              })`,
-            },
-          });
+      // Safe retry path for an R1 approval whose commission distribution failed
+      // after the primary deposit credit committed. Historical approved deposits
+      // are marked referralProcessed=true by the R1 migration.
+      if (deposit.status === "approved") {
+        if (!deposit.referralProcessed) {
+          await storage.distributeReferralCommissions(
+            deposit.userId,
+            toFloat(deposit.amount),
+            id,
+          );
+          return res.json({ ok: true, alreadyApproved: true, referralRetry: true });
         }
+        return res.json({ ok: true, alreadyApproved: true });
+      }
+
+      const { override } = await approvePendingDeposit({
+        deposit,
+        adminUserId: req.authUser!.id,
+        notes,
+        force: !!force,
       });
 
-      await storage.distributeReferralCommissions(deposit.userId, toFloat(deposit.amount));
-
-      await storage.createActivity({
-        userId: deposit.userId,
-        type: "deposit_approved",
-        description: `Deposit of ${toFloat(deposit.amount).toLocaleString()} XNRT approved`,
-      });
+      await storage.distributeReferralCommissions(
+        deposit.userId,
+        toFloat(deposit.amount),
+        id,
+      );
 
       void notifyUser(deposit.userId, {
         type: "deposit_approved",
@@ -167,7 +227,15 @@ router.post(
       });
 
       res.json({ ok: true, override });
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.message === "DEPOSIT_NOT_VERIFIED") {
+        return res.status(400).json({
+          message: "Deposit is not verified. Pass force=true only after manual review.",
+        });
+      }
+      if (error?.message === "DEPOSIT_ALREADY_PROCESSED") {
+        return res.status(409).json({ message: "Deposit already processed" });
+      }
       console.error("Error approving deposit:", error);
       return res.status(500).json({ message: "Failed to approve deposit" });
     }
@@ -190,20 +258,31 @@ router.post(
         return res.status(404).json({ message: "Deposit not found" });
       }
 
-      if (deposit.status === "approved" || deposit.status === "rejected") {
-        return res.status(400).json({ message: "Deposit already processed" });
+      const rejected = await prismaAny.$transaction(async (tx: any) => {
+        const claimed = await tx.transaction.updateMany({
+          where: { id, type: "deposit", status: "pending" },
+          data: {
+            status: "rejected",
+            adminNotes: notes ?? deposit.adminNotes,
+            approvedBy: req.authUser!.id,
+            approvedAt: new Date(),
+          },
+        });
+        if (claimed.count !== 1) return false;
+
+        await tx.activity.create({
+          data: {
+            userId: deposit.userId,
+            type: "deposit_rejected",
+            description: `Deposit of ${toFloat(deposit.amount).toLocaleString()} XNRT rejected${notes ? ` - ${notes}` : ""}`,
+          },
+        });
+        return true;
+      });
+
+      if (!rejected) {
+        return res.status(409).json({ message: "Deposit already processed" });
       }
-
-      await storage.updateTransaction(id, {
-        status: "rejected",
-        adminNotes: notes ?? deposit.adminNotes,
-      });
-
-      await storage.createActivity({
-        userId: deposit.userId,
-        type: "deposit_rejected",
-        description: `Deposit of ${toFloat(deposit.amount).toLocaleString()} XNRT rejected${notes ? ` - ${notes}` : ""}`,
-      });
 
       res.json({ message: "Deposit rejected" });
     } catch (error) {
@@ -220,9 +299,10 @@ router.post(
   validateCSRF,
   async (req, res) => {
     try {
-      const { depositIds, notes } = (req.body ?? {}) as {
+      const { depositIds, notes, force } = (req.body ?? {}) as {
         depositIds?: string[];
         notes?: string;
+        force?: boolean;
       };
 
       if (!depositIds || !Array.isArray(depositIds) || depositIds.length === 0) {
@@ -240,56 +320,33 @@ router.post(
           if (!deposit || deposit.type !== "deposit") {
             throw new Error(`Deposit ${id} not found`);
           }
-          if (deposit.status === "approved" || deposit.status === "rejected") {
-            throw new Error(`Deposit ${id} already processed`);
+          if (deposit.status === "rejected") {
+            throw new Error(`Deposit ${id} already rejected`);
+          }
+          if (deposit.status === "approved") {
+            if (!deposit.referralProcessed) {
+              await storage.distributeReferralCommissions(
+                deposit.userId,
+                toFloat(deposit.amount),
+                id,
+              );
+            }
+            successful.push(id);
+            continue;
           }
 
-          const override = !deposit.verified;
-
-          await prismaAny.$transaction(async (tx: any) => {
-            const amountDec = new DecimalCtor(deposit.amount);
-
-            await tx.balance.upsert({
-              where: { userId: deposit.userId },
-              create: {
-                userId: deposit.userId,
-                xnrtBalance: amountDec,
-                totalEarned: amountDec,
-              },
-              update: {
-                xnrtBalance: { increment: amountDec },
-                totalEarned: { increment: amountDec },
-              },
-            });
-
-            await tx.transaction.update({
-              where: { id },
-              data: {
-                status: "approved",
-                adminNotes: notes ?? deposit.adminNotes,
-                approvedBy: req.authUser!.id,
-                approvedAt: new Date(),
-              },
-            });
-
-            if (override) {
-              await tx.activity.create({
-                data: {
-                  userId: req.authUser!.id,
-                  type: "ADMIN_DEPOSIT_OVERRIDE",
-                  description: `Force-approved deposit ${id} for user ${deposit.userId} via bulk`,
-                },
-              });
-            }
+          await approvePendingDeposit({
+            deposit,
+            adminUserId: req.authUser!.id,
+            notes,
+            force: !!force,
           });
 
-          await storage.distributeReferralCommissions(deposit.userId, toFloat(deposit.amount));
-
-          await storage.createActivity({
-            userId: deposit.userId,
-            type: "deposit_approved",
-            description: `Deposit of ${toFloat(deposit.amount).toLocaleString()} XNRT approved${notes ? ` - ${notes}` : ""}`,
-          });
+          await storage.distributeReferralCommissions(
+            deposit.userId,
+            toFloat(deposit.amount),
+            id,
+          );
 
           void notifyUser(deposit.userId, {
             type: "deposit_approved",
@@ -351,22 +408,31 @@ router.post(
           if (!deposit || deposit.type !== "deposit") {
             throw new Error(`Deposit ${id} not found`);
           }
-          if (deposit.status === "approved" || deposit.status === "rejected") {
+          const rejected = await prismaAny.$transaction(async (tx: any) => {
+            const claimed = await tx.transaction.updateMany({
+              where: { id, type: "deposit", status: "pending" },
+              data: {
+                status: "rejected",
+                adminNotes: notes || deposit.adminNotes,
+                approvedBy: req.authUser!.id,
+                approvedAt: new Date(),
+              },
+            });
+            if (claimed.count !== 1) return false;
+
+            await tx.activity.create({
+              data: {
+                userId: deposit.userId,
+                type: "deposit_rejected",
+                description: `Deposit of ${toFloat(deposit.amount).toLocaleString()} XNRT rejected${notes ? ` - ${notes}` : ""}`,
+              },
+            });
+            return true;
+          });
+
+          if (!rejected) {
             throw new Error(`Deposit ${id} already processed`);
           }
-
-          await storage.updateTransaction(id, {
-            status: "rejected",
-            adminNotes: notes || deposit.adminNotes,
-            approvedBy: req.authUser!.id,
-            approvedAt: new Date(),
-          });
-
-          await storage.createActivity({
-            userId: deposit.userId,
-            type: "deposit_rejected",
-            description: `Deposit of ${toFloat(deposit.amount).toLocaleString()} XNRT rejected${notes ? ` - ${notes}` : ""}`,
-          });
 
           successful.push(id);
         } catch (error) {
@@ -426,7 +492,26 @@ router.post(
         return res.status(404).json({ message: "Unmatched deposit not found" });
       }
       if (unmatchedDeposit.resolved) {
-        return res.status(400).json({ message: "Deposit already matched" });
+        const existing = await prismaAny.transaction.findFirst({
+          where: { transactionHash: unmatchedDeposit.txHash },
+        });
+        if (
+          existing?.type === "deposit" &&
+          existing.status === "approved" &&
+          !existing.referralProcessed
+        ) {
+          await storage.distributeReferralCommissions(
+            existing.userId,
+            toFloat(existing.amount),
+            existing.id,
+          );
+          return res.json({
+            message: "Deposit was already matched; referral payout retry completed",
+            alreadyMatched: true,
+            referralRetry: true,
+          });
+        }
+        return res.status(409).json({ message: "Deposit already matched" });
       }
 
       const usdtAmount = toFloat(unmatchedDeposit.amount);
@@ -437,8 +522,8 @@ router.post(
 
       const txHash = unmatchedDeposit.txHash ?? (unmatchedDeposit as any).transactionHash;
 
-      await prismaAny.$transaction(async (tx: any) => {
-        await tx.transaction.create({
+      const createdDeposit = await prismaAny.$transaction(async (tx: any) => {
+        const created = await tx.transaction.create({
           data: {
             userId,
             type: "deposit",
@@ -472,18 +557,27 @@ router.post(
           },
         });
 
+        await tx.activity.create({
+          data: {
+            userId,
+            type: "deposit_approved",
+            description: `Deposit of ${xnrtAmount.toLocaleString()} XNRT approved via manual match`,
+          },
+        });
+
         await tx.unmatchedDeposit.update({
           where: { id },
           data: { resolved: true },
         });
+
+        return created;
       });
 
-      await storage.distributeReferralCommissions(userId, xnrtAmount);
-      await storage.createActivity({
+      await storage.distributeReferralCommissions(
         userId,
-        type: "deposit_approved",
-        description: `Deposit of ${xnrtAmount.toLocaleString()} XNRT approved via manual match`,
-      });
+        xnrtAmount,
+        createdDeposit.id,
+      );
 
       res.json({ message: "Deposit matched and credited successfully" });
     } catch (error) {
@@ -561,7 +655,28 @@ router.post(
       const report = await prismaAny.depositReport.findUnique({ where: { id } });
       if (!report) return res.status(404).json({ message: "Report not found" });
       if (report.status !== "pending") {
-        return res.status(400).json({ message: "Report already resolved" });
+        if (report.status === "approved" && report.txHash) {
+          const existing = await prismaAny.transaction.findFirst({
+            where: { transactionHash: report.txHash },
+          });
+          if (
+            existing?.type === "deposit" &&
+            existing.status === "approved" &&
+            !existing.referralProcessed
+          ) {
+            await storage.distributeReferralCommissions(
+              existing.userId,
+              toFloat(existing.amount),
+              existing.id,
+            );
+            return res.json({
+              message: "Report was already approved; referral payout retry completed",
+              alreadyResolved: true,
+              referralRetry: true,
+            });
+          }
+        }
+        return res.status(409).json({ message: "Report already resolved" });
       }
 
       if (resolution === "approved") {
@@ -571,8 +686,20 @@ router.post(
         const netUsdt = usdtAmount * (1 - platformFeeBps / 10_000);
         const xnrtAmount = netUsdt * xnrtRate;
 
-        await prismaAny.$transaction(async (tx: any) => {
-          await tx.transaction.create({
+        const createdDeposit = await prismaAny.$transaction(async (tx: any) => {
+          const claimed = await tx.depositReport.updateMany({
+            where: { id, status: "pending" },
+            data: {
+              status: "approved",
+              resolvedAt: new Date(),
+              notes: adminNotes || null,
+            },
+          });
+          if (claimed.count !== 1) {
+            throw new Error("REPORT_ALREADY_RESOLVED");
+          }
+
+          const created = await tx.transaction.create({
             data: {
               userId: report.userId!,
               type: "deposit",
@@ -599,35 +726,41 @@ router.post(
             },
           });
 
-          await tx.depositReport.update({
-            where: { id },
+          await tx.activity.create({
             data: {
-              status: "approved",
-              resolvedAt: new Date(),
-              notes: adminNotes || null,
+              userId: report.userId!,
+              type: "deposit_approved",
+              description: `Deposit of ${xnrtAmount.toLocaleString()} XNRT approved from deposit report`,
             },
           });
+
+          return created;
         });
 
-        await storage.distributeReferralCommissions(report.userId!, xnrtAmount);
-        await storage.createActivity({
-          userId: report.userId!,
-          type: "deposit_approved",
-          description: `Deposit of ${xnrtAmount.toLocaleString()} XNRT approved from deposit report`,
-        });
+        await storage.distributeReferralCommissions(
+          report.userId!,
+          xnrtAmount,
+          createdDeposit.id,
+        );
       } else {
-        await prismaAny.depositReport.update({
-          where: { id },
+        const rejected = await prismaAny.depositReport.updateMany({
+          where: { id, status: "pending" },
           data: {
             status: "rejected",
             resolvedAt: new Date(),
             notes: adminNotes || null,
           },
         });
+        if (rejected.count !== 1) {
+          return res.status(409).json({ message: "Report already resolved" });
+        }
       }
 
       res.json({ message: `Report ${resolution} successfully` });
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.message === "REPORT_ALREADY_RESOLVED") {
+        return res.status(409).json({ message: "Report already resolved" });
+      }
       console.error("Error resolving deposit report:", error);
       res.status(500).json({ message: "Failed to resolve report" });
     }
@@ -640,48 +773,10 @@ router.post(
   requireAdmin,
   validateCSRF,
   async (_req, res) => {
-    try {
-      console.log("[RECONCILE] Starting referral commission reconciliation...");
-
-      const approvedDeposits = await storage.raw(`
-      SELECT id, "userId", amount, "createdAt"
-      FROM "Transaction"
-      WHERE type = 'deposit' AND status = 'approved'
-      ORDER BY "createdAt" ASC
-    `);
-
-      console.log(
-        `[RECONCILE] Found ${approvedDeposits.length} approved deposits to process`,
-      );
-
-      await storage.raw(`DELETE FROM "Referral"`);
-      console.log("[RECONCILE] Cleared existing referral records");
-
-      await storage.raw(`UPDATE "Balance" SET "referralBalance" = 0`);
-      console.log("[RECONCILE] Reset all referral balances");
-
-      let totalProcessed = 0;
-      for (const deposit of approvedDeposits as Array<{ id: string; userId: string; amount: string }>) {
-        const amount = parseFloat(deposit.amount);
-        console.log(
-          `[RECONCILE] Processing deposit ${deposit.id}: ${amount} XNRT for user ${deposit.userId}`,
-        );
-        await storage.distributeReferralCommissions(deposit.userId, amount);
-        totalProcessed++;
-      }
-
-      console.log(
-        `[RECONCILE] Reconciliation complete. Processed ${totalProcessed} deposits.`,
-      );
-
-      res.json({
-        message: "Referral commissions reconciled successfully",
-        depositsProcessed: totalProcessed,
-      });
-    } catch (error) {
-      console.error("Error reconciling referrals:", error);
-      res.status(500).json({ message: "Failed to reconcile referrals" });
-    }
+    return res.status(410).json({
+      message:
+        "Legacy destructive referral reconciliation is disabled in XNRT R1. Use the idempotent ReferralCommission ledger and a reviewed offline repair procedure instead.",
+    });
   },
 );
 

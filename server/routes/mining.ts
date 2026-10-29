@@ -87,7 +87,12 @@ router.post("/start", requireAuth, validateCSRF, async (req, res) => {
     });
 
     res.json(session);
-  } catch (error) {
+  } catch (error: any) {
+    if (error?.code === "P2002") {
+      return res
+        .status(409)
+        .json({ message: "You already have an active mining session" });
+    }
     console.error("Error starting mining:", error);
     res.status(500).json({ message: "Failed to start mining" });
   }

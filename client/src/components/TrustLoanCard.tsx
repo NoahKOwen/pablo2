@@ -191,7 +191,7 @@ export default function TrustLoanCard() {
 
               {hasLoanStake && (
                 <p className="text-xs text-chart-2">
-                  Trust Loan already active:{" "}
+                  Trust Loan already claimed:{" "}
                   {TRUST_LOAN_CONFIG.amountXnrt.toLocaleString()} XNRT staked.
                 </p>
               )}

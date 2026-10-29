@@ -19,7 +19,7 @@ const MIN_MINING_WITHDRAWAL = 5000;
 
 export default function Withdrawal() {
   const { toast } = useToast();
-  const [source, setSource] = useState<"main" | "staking" | "mining" | "referral">("main");
+  const [source, setSource] = useState<"main" | "mining" | "referral">("main");
   const [amount, setAmount] = useState("");
   const [walletAddress, setWalletAddress] = useState("");
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
@@ -83,9 +83,6 @@ export default function Withdrawal() {
       case "main":
         availableBalance = parseFloat(balance?.xnrtBalance || "0");
         break;
-      case "staking":
-        availableBalance = parseFloat(balance?.stakingBalance || "0");
-        break;
       case "mining":
         availableBalance = parseFloat(balance?.miningBalance || "0");
         break;
@@ -138,9 +135,6 @@ export default function Withdrawal() {
     case "main":
       availableBalance = parseFloat(balance?.xnrtBalance || "0");
       break;
-    case "staking":
-      availableBalance = parseFloat(balance?.stakingBalance || "0");
-      break;
     case "mining":
       availableBalance = parseFloat(balance?.miningBalance || "0");
       break;
@@ -149,7 +143,7 @@ export default function Withdrawal() {
       break;
   }
 
-  const canWithdraw = source === "main" || source === "staking" || withdrawAmount >= 5000;
+  const canWithdraw = source === "main" || withdrawAmount >= 5000;
 
   const getStatusIcon = (status: string) => {
     switch (status) {
@@ -203,19 +197,16 @@ export default function Withdrawal() {
           </CardContent>
         </Card>
 
-        <Card 
-          className={`cursor-pointer transition-all ${source === "staking" ? "border-chart-1 ring-2 ring-chart-1/20" : "hover:border-chart-1/50"}`}
-          onClick={() => setSource("staking")}
-        >
+        <Card className="cursor-default opacity-80">
           <CardContent className="p-6">
             <div className="flex items-center justify-between mb-2">
-              <p className="text-sm text-muted-foreground">Staking Balance</p>
+              <p className="text-sm text-muted-foreground">Staking Locked</p>
               <Wallet className="h-5 w-5 text-chart-1" />
             </div>
             <p className="text-3xl font-bold font-mono" data-testid="text-staking-balance">
               {parseFloat(balance?.stakingBalance || "0").toLocaleString()}
             </p>
-            <p className="text-sm text-muted-foreground">XNRT</p>
+            <p className="text-sm text-muted-foreground">Withdraw after maturity from Staking</p>
           </CardContent>
         </Card>
 
@@ -271,17 +262,11 @@ export default function Withdrawal() {
         <CardContent className="space-y-4">
           <div>
             <Label>Source Balance</Label>
-            <RadioGroup value={source} onValueChange={(v) => setSource(v as "main" | "staking" | "mining" | "referral")}>
+            <RadioGroup value={source} onValueChange={(v) => setSource(v as "main" | "mining" | "referral")}>
               <div className="flex items-center space-x-2">
                 <RadioGroupItem value="main" id="main" data-testid="radio-main" />
                 <Label htmlFor="main" className="cursor-pointer">
                   Main Balance ({parseFloat(balance?.xnrtBalance || "0").toLocaleString()} XNRT)
-                </Label>
-              </div>
-              <div className="flex items-center space-x-2">
-                <RadioGroupItem value="staking" id="staking" data-testid="radio-staking" />
-                <Label htmlFor="staking" className="cursor-pointer">
-                  Staking Balance ({parseFloat(balance?.stakingBalance || "0").toLocaleString()} XNRT)
                 </Label>
               </div>
               <div className="flex items-center space-x-2">

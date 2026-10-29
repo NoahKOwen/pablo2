@@ -61,6 +61,7 @@ export default function DepositsTab() {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedDeposit, setSelectedDeposit] = useState<Transaction | null>(null);
   const [adminNotes, setAdminNotes] = useState("");
+  const [forceApprove, setForceApprove] = useState(false);
   const [proofDialogOpen, setProofDialogOpen] = useState(false);
   const [selectedProofUrl, setSelectedProofUrl] = useState("");
   
@@ -69,6 +70,7 @@ export default function DepositsTab() {
   const [bulkConfirmDialogOpen, setBulkConfirmDialogOpen] = useState(false);
   const [bulkAction, setBulkAction] = useState<'approve' | 'reject' | null>(null);
   const [bulkAdminNotes, setBulkAdminNotes] = useState("");
+  const [bulkForceApprove, setBulkForceApprove] = useState(false);
 
   const { data: pendingDeposits, isLoading } = useQuery<Transaction[]>({
     queryKey: ["/api/admin/deposits/pending"],
@@ -83,6 +85,7 @@ export default function DepositsTab() {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/stats"] });
       setSelectedDeposit(null);
       setAdminNotes("");
+      setForceApprove(false);
       toast({
         title: "Success",
         description: "Deposit approved successfully",
@@ -117,6 +120,7 @@ export default function DepositsTab() {
       setSelectedDepositIds(new Set());
       setBulkConfirmDialogOpen(false);
       setBulkAdminNotes("");
+      setBulkForceApprove(false);
       
       const { approved, failed, total } = data;
       if (failed > 0) {
@@ -250,7 +254,11 @@ export default function DepositsTab() {
   const confirmBulkAction = () => {
     const depositIds = Array.from(selectedDepositIds);
     if (bulkAction === 'approve') {
-      bulkApproveMutation.mutate({ depositIds, notes: bulkAdminNotes || undefined, force: true });
+      bulkApproveMutation.mutate({
+        depositIds,
+        notes: bulkAdminNotes || undefined,
+        force: bulkForceApprove,
+      });
     } else if (bulkAction === 'reject') {
       bulkRejectMutation.mutate({ depositIds, notes: bulkAdminNotes || undefined });
     }
@@ -529,7 +537,13 @@ export default function DepositsTab() {
 
       {/* Approve Dialog */}
       {selectedDeposit && (
-        <Dialog open={!!selectedDeposit} onOpenChange={() => setSelectedDeposit(null)}>
+        <Dialog
+          open={!!selectedDeposit}
+          onOpenChange={() => {
+            setSelectedDeposit(null);
+            setForceApprove(false);
+          }}
+        >
           <DialogContent data-testid="dialog-approve-deposit">
             <DialogHeader>
               <DialogTitle>Approve Deposit</DialogTitle>
@@ -550,7 +564,10 @@ export default function DepositsTab() {
               <div className="flex gap-2 justify-end">
                 <Button
                   variant="outline"
-                  onClick={() => setSelectedDeposit(null)}
+                  onClick={() => {
+                    setSelectedDeposit(null);
+                    setForceApprove(false);
+                  }}
                   data-testid="button-cancel-approve"
                 >
                   Cancel
@@ -559,7 +576,7 @@ export default function DepositsTab() {
                   onClick={() => approveMutation.mutate({ 
                     id: selectedDeposit.id, 
                     notes: adminNotes || undefined, 
-                    force: true, 
+                    force: forceApprove,
                   })}
                   disabled={approveMutation.isPending}
                   data-testid="button-confirm-approve"
@@ -568,6 +585,17 @@ export default function DepositsTab() {
                   Confirm Approval
                 </Button>
               </div>
+              {selectedDeposit.verified !== true && (
+                <label className="flex items-start gap-2 rounded-md border p-3 text-sm">
+                  <Checkbox
+                    checked={forceApprove}
+                    onCheckedChange={(checked) => setForceApprove(checked === true)}
+                  />
+                  <span>
+                    Force approve this unverified deposit after manual on-chain review.
+                  </span>
+                </label>
+              )}
             </div>
           </DialogContent>
         </Dialog>
@@ -614,6 +642,17 @@ export default function DepositsTab() {
                 data-testid="textarea-bulk-admin-notes"
               />
             </div>
+            {bulkAction === 'approve' && selectedDeposits.some((d) => d.verified !== true) && (
+              <label className="flex items-start gap-2 rounded-md border p-3 text-sm">
+                <Checkbox
+                  checked={bulkForceApprove}
+                  onCheckedChange={(checked) => setBulkForceApprove(checked === true)}
+                />
+                <span>
+                  Force approve unverified selected deposits after manual on-chain review.
+                </span>
+              </label>
+            )}
           </div>
           <AlertDialogFooter>
             <Button
@@ -621,6 +660,7 @@ export default function DepositsTab() {
               onClick={() => {
                 setBulkConfirmDialogOpen(false);
                 setBulkAdminNotes("");
+                setBulkForceApprove(false);
               }}
               data-testid="button-cancel-bulk-action"
             >

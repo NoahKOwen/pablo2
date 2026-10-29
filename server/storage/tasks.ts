@@ -76,21 +76,24 @@ export function createTaskMethods(prisma: any, _storage: any) {
       throw new Error("TASK_NOT_FOUND");
     }
 
-    // You have @@unique([userId, taskId]) so Prisma exposes userId_taskId
-    const existing = await prismaAny.userTask.findUnique({
-      where: { userId_taskId: { userId, taskId } },
-    });
-
-    if (existing?.completed) {
-      throw new Error("TASK_ALREADY_COMPLETED");
-    }
-
     const xpReward: number = toNum(task.xpReward);
     const xnrtRewardDec: Decimal = toDec(task.xnrtReward);
     const xnrtReward: number = toNum(xnrtRewardDec.toString());
     const taskTitle: string = String(task.title ?? "Task");
 
     await prismaAny.$transaction(async (tx: any) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`task:${userId}:${taskId}`}))`;
+
+      // Re-read after acquiring the lock. This prevents two tabs/processes from
+      // both observing completed=false and crediting the same reward twice.
+      const existing = await tx.userTask.findUnique({
+        where: { userId_taskId: { userId, taskId } },
+      });
+
+      if (existing?.completed) {
+        throw new Error("TASK_ALREADY_COMPLETED");
+      }
+
       if (existing?.id) {
         const progress = toNum(existing.progress);
         const maxProgress = toNum(existing.maxProgress) || 1;
@@ -99,10 +102,13 @@ export function createTaskMethods(prisma: any, _storage: any) {
           throw new Error("TASK_NOT_READY");
         }
 
-        await tx.userTask.update({
-          where: { id: existing.id },
+        const claimed = await tx.userTask.updateMany({
+          where: { id: existing.id, completed: false },
           data: { completed: true, completedAt: new Date() },
         });
+        if (claimed.count !== 1) {
+          throw new Error("TASK_ALREADY_COMPLETED");
+        }
       } else {
         await tx.userTask.create({
           data: {
@@ -116,7 +122,6 @@ export function createTaskMethods(prisma: any, _storage: any) {
         });
       }
 
-      // Credit XNRT reward to Balance
       if (xnrtRewardDec.gt(0)) {
         await tx.balance.upsert({
           where: { userId },
@@ -132,7 +137,6 @@ export function createTaskMethods(prisma: any, _storage: any) {
         });
       }
 
-      // Credit XP reward to User
       if (xpReward > 0) {
         await tx.user.update({
           where: { id: userId },

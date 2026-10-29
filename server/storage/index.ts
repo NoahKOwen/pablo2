@@ -79,8 +79,16 @@ export class DatabaseStorage implements IStorage {
   createReferral = (referral: any) => this.referralMethods.createReferral(referral);
   updateReferral = (id: string, updates: any) =>
     this.referralMethods.updateReferral(id, updates);
-  distributeReferralCommissions = (userId: string, amount: number) =>
-    this.referralMethods.distributeReferralCommissions(userId, amount);
+  distributeReferralCommissions = (
+    userId: string,
+    amount: number,
+    sourceTransactionId: string,
+  ) =>
+    this.referralMethods.distributeReferralCommissions(
+      userId,
+      amount,
+      sourceTransactionId,
+    );
   getReferrerChain = (userId: string, maxLevels: number) =>
     this.referralMethods.getReferrerChain(userId, maxLevels);
 

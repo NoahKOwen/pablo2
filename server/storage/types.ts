@@ -58,7 +58,7 @@ export function convertPrismaStake(stake: any): Stake {
     dailyRate: decimalToString(stake.dailyRate),
     totalProfit: decimalToString(stake.totalProfit),
     lastProfitDate: stake.lastProfitDate || undefined,
-    isLoan: !!(stake.loanProgram && stake.loanProgram.startsWith("trust_")),
+    isLoan: !!stake.isLoan,
     loanProgram: stake.loanProgram || undefined,
     unlockMet: stake.unlockMet,
     requiredReferrals: stake.requiredReferrals,

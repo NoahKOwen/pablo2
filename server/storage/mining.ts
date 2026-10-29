@@ -1,5 +1,6 @@
 // server/storage/mining.ts
 import type { PrismaClient } from "../db/client";
+import { Prisma } from "../db/client";
 import { type MiningSession, type InsertMiningSession } from "@shared/schema";
 import { DEFAULT_MINING_BASE_REWARD, XP_TO_XNRT_RATE } from "./constants";
 
@@ -34,53 +35,56 @@ export function createMiningMethods(prisma: PrismaClient, storage: any) {
     const xpReward = finalReward;
     const xnrtReward = finalReward * XP_TO_XNRT_RATE;
 
-    // Concurrency guard: only process if we can atomically change status
-    const updateResult = await prisma.miningSession.updateMany({
-      where: {
-        id: session.id,
-        status: "active",
-      },
-      data: {
-        status: "completed",
-        finalReward,
-        endTime: now,
-      },
+    const credited = await prisma.$transaction(async (tx: any) => {
+      // One caller wins the active -> completed transition. Rewards and the
+      // transition are committed together, eliminating the old "completed but
+      // unpaid" failure mode.
+      const updateResult = await tx.miningSession.updateMany({
+        where: {
+          id: session.id,
+          status: "active",
+          endTime: { lte: now },
+        },
+        data: {
+          status: "completed",
+          finalReward,
+        },
+      });
+
+      if (updateResult.count === 0) return false;
+
+      await tx.user.update({
+        where: { id: session.userId },
+        data: { xp: { increment: xpReward } },
+      });
+
+      await tx.balance.upsert({
+        where: { userId: session.userId },
+        create: {
+          userId: session.userId,
+          miningBalance: new Prisma.Decimal(xnrtReward),
+          totalEarned: new Prisma.Decimal(xnrtReward),
+        },
+        update: {
+          miningBalance: { increment: new Prisma.Decimal(xnrtReward) },
+          totalEarned: { increment: new Prisma.Decimal(xnrtReward) },
+        },
+      });
+
+      await tx.activity.create({
+        data: {
+          userId: session.userId,
+          type: "mining_completed",
+          description: `Auto-completed mining session and earned ${xpReward} XP and ${xnrtReward.toFixed(
+            1,
+          )} XNRT`,
+        },
+      });
+
+      return true;
     });
 
-    if (updateResult.count === 0) {
-      // Someone else already completed this session (or it was not active),
-      // so we MUST NOT apply rewards again.
-      return false;
-    }
-
-    // Apply rewards through storage helpers (to keep consistency
-    // with the rest of the storage layer).
-    const user = await storage.getUser(session.userId);
-    if (user) {
-      await storage.updateUser(session.userId, {
-        xp: (user.xp || 0) + xpReward,
-      });
-    }
-
-    const balance = await storage.getBalance(session.userId);
-    if (balance) {
-      await storage.updateBalance(session.userId, {
-        miningBalance: (
-          parseFloat(balance.miningBalance) + xnrtReward
-        ).toString(),
-        totalEarned: (
-          parseFloat(balance.totalEarned) + xnrtReward
-        ).toString(),
-      });
-    }
-
-    await storage.createActivity({
-      userId: session.userId,
-      type: "mining_completed",
-      description: `Auto-completed mining session and earned ${xpReward} XP and ${xnrtReward.toFixed(
-        1,
-      )} XNRT`,
-    });
+    if (!credited) return false;
 
     const { notifyUser } = await import("../notifications");
     void notifyUser(session.userId, {

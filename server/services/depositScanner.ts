@@ -174,75 +174,58 @@ async function processDepositEvent(
   currentBlock: number,
   addressToUserId: Map<string, string>,
 ) {
-  try {
-    const txHash = event.transactionHash.toLowerCase();
-    const from = ((event.args as any).from as string).toLowerCase();
-    const to = ((event.args as any).to as string).toLowerCase();
-    const value = (event.args as any).value as bigint;
-    const blockNumber = event.blockNumber;
-    const confirmations = currentBlock - blockNumber;
+  const txHash = event.transactionHash.toLowerCase();
+  const from = ((event.args as any).from as string).toLowerCase();
+  const to = ((event.args as any).to as string).toLowerCase();
+  const value = (event.args as any).value as bigint;
+  const blockNumber = event.blockNumber;
+  const confirmations = currentBlock - blockNumber;
+  const usdtAmount = Number(ethers.formatUnits(value, 18));
 
-    // USDT has 18 decimals on BSC
-    const usdtAmount = Number(ethers.formatUnits(value, 18));
+  let userId = addressToUserId.get(to);
 
-    // Check if this transfer is to a user's deposit address
-    const userId = addressToUserId.get(to);
-
-    if (!userId) {
-      // Not sent to a user deposit address, check if it's to treasury (legacy/manual)
-      if (TREASURY_ADDRESS && to === TREASURY_ADDRESS) {
-        // Legacy treasury deposit - check for linked wallet
-        const linkedWallet = await prisma.linkedWallet.findFirst({
-          where: { address: from, active: true },
-        });
-
-        if (linkedWallet) {
-          // Skip if already processed
-          const existing = await prisma.transaction.findFirst({
-            where: { transactionHash: txHash },
-          });
-          if (existing) return;
-
-          await processUserDeposit(
-            linkedWallet.userId,
-            to,
-            from,
-            usdtAmount,
-            txHash,
-            blockNumber,
-            confirmations,
-          );
-        }
-      }
-      return; // Not a user deposit
-    }
-
-    // Skip if already processed
-    const existingTx = await prisma.transaction.findFirst({
-      where: { transactionHash: txHash },
+  if (!userId && TREASURY_ADDRESS && to === TREASURY_ADDRESS) {
+    const linkedWallet = await prisma.linkedWallet.findFirst({
+      where: { address: from, active: true },
     });
-
-    if (existingTx) {
-      return; // Already processed
-    }
-
-    console.log(
-      `[DepositScanner] New deposit: ${usdtAmount} USDT to user deposit address ${to}`,
-    );
-
-    // Process user deposit
-    await processUserDeposit(
-      userId,
-      to,
-      from,
-      usdtAmount,
-      txHash,
-      blockNumber,
-      confirmations,
-    );
-  } catch (error) {
-    console.error("[DepositScanner] Event processing error:", error);
+    userId = linkedWallet?.userId;
   }
+
+  if (!userId) return;
+
+  const existing = await prisma.transaction.findFirst({
+    where: { transactionHash: txHash },
+  });
+
+  if (existing) {
+    if (
+      existing.type === "deposit" &&
+      existing.status === "approved" &&
+      !existing.referralProcessed
+    ) {
+      const { storage } = await import("../storage");
+      await storage.distributeReferralCommissions(
+        existing.userId,
+        Number(existing.amount),
+        existing.id,
+      );
+    }
+    return;
+  }
+
+  console.log(
+    `[DepositScanner] New deposit: ${usdtAmount} USDT to user deposit address ${to}`,
+  );
+
+  await processUserDeposit(
+    userId,
+    to,
+    from,
+    usdtAmount,
+    txHash,
+    blockNumber,
+    confirmations,
+  );
 }
 
 async function processUserDeposit(
@@ -254,29 +237,28 @@ async function processUserDeposit(
   blockNumber: number,
   confirmations: number,
 ) {
+  if (confirmations < REQUIRED_CONFIRMATIONS) {
+    console.log(
+      `[DepositScanner] Tx ${txHash} only has ${confirmations}/${REQUIRED_CONFIRMATIONS} confirmations, waiting for more`,
+    );
+    return;
+  }
+
+  const netUsdt = usdtAmount * (1 - PLATFORM_FEE_BPS / 10_000);
+  const xnrtAmount = netUsdt * XNRT_RATE;
+
+  let createdDeposit: any;
+
   try {
-    // Make sure we only ever credit once tx has enough confirmations.
-    if (confirmations < REQUIRED_CONFIRMATIONS) {
-      console.log(
-        `[DepositScanner] Tx ${txHash} only has ${confirmations}/${REQUIRED_CONFIRMATIONS} confirmations, waiting for more`,
-      );
-      return;
-    }
-
-    // Calculate XNRT amount
-    const netUsdt = usdtAmount * (1 - PLATFORM_FEE_BPS / 10_000);
-    const xnrtAmount = netUsdt * XNRT_RATE;
-
-    await prisma.$transaction(async (tx: any) => {
-      // Create approved transaction
-      await tx.transaction.create({
+    createdDeposit = await prisma.$transaction(async (tx: any) => {
+      const created = await tx.transaction.create({
         data: {
           userId,
           type: "deposit",
           amount: new Prisma.Decimal(xnrtAmount),
           usdtAmount: new Prisma.Decimal(usdtAmount),
           transactionHash: txHash,
-          walletAddress: toAddress, // User's deposit address or treasury
+          walletAddress: toAddress,
           status: "approved",
           verified: true,
           confirmations,
@@ -289,7 +271,6 @@ async function processUserDeposit(
         },
       });
 
-      // Credit balance atomically
       await tx.balance.upsert({
         where: { userId },
         create: {
@@ -302,19 +283,40 @@ async function processUserDeposit(
           totalEarned: { increment: new Prisma.Decimal(xnrtAmount) },
         },
       });
-    });
 
-    console.log(
-      `[DepositScanner] Auto-credited ${xnrtAmount} XNRT to user ${userId}`,
-    );
+      await tx.activity.create({
+        data: {
+          userId,
+          type: "deposit_approved",
+          description: `Deposit of ${xnrtAmount.toLocaleString()} XNRT auto-credited by scanner`,
+        },
+      });
 
-    // Send notification (non-blocking)
-    void sendDepositNotification(userId, xnrtAmount, txHash).catch((err) => {
-      console.error("[DepositScanner] Notification error:", err);
+      return created;
     });
-  } catch (error) {
-    console.error("[DepositScanner] Linked deposit processing error:", error);
+  } catch (error: any) {
+    if (error?.code !== "P2002") throw error;
+
+    createdDeposit = await prisma.transaction.findFirst({
+      where: { transactionHash: txHash },
+    });
+    if (!createdDeposit || createdDeposit.status !== "approved") throw error;
   }
+
+  const { storage } = await import("../storage");
+  await storage.distributeReferralCommissions(
+    createdDeposit.userId,
+    Number(createdDeposit.amount),
+    createdDeposit.id,
+  );
+
+  console.log(
+    `[DepositScanner] Auto-credited ${xnrtAmount} XNRT to user ${userId}`,
+  );
+
+  void sendDepositNotification(userId, xnrtAmount, txHash).catch((err) => {
+    console.error("[DepositScanner] Notification error:", err);
+  });
 }
 
 async function sendDepositNotification(
