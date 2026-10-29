@@ -33,6 +33,7 @@ model User {
   DepositReport            DepositReport[]
   linkedWallets            LinkedWallet[]
   miningSessions           MiningSession[]
+  miningActivations        MiningActivation[]
   notifications            Notification[]
   passwordResets           PasswordReset[]
   pushSubscriptions        PushSubscription[]
@@ -153,6 +154,7 @@ model Transaction {
   referralProcessed Boolean   @default(false)
   createdAt        DateTime  @default(now()) @db.Timestamp(6)
   user             User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "Transaction_userId_User_id_fk")
+  miningPowerActivation MiningActivation? @relation("MiningActivationPayment")
 
   @@index([createdAt], map: "transactions_createdAt_idx")
   @@index([status], map: "transactions_status_idx")
@@ -379,4 +381,116 @@ model UnmatchedDeposit {
 
   @@index([toAddress], map: "unmatched_deposits_toAddress_idx")
   @@index([resolved], map: "unmatched_deposits_resolved_idx")
+}
+
+model MiningProtocolConfig {
+  id                              String             @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  version                         String             @unique(map: "mining_protocol_config_version_unique") @db.VarChar
+  status                          String             @default("draft") @db.VarChar
+  tokenomicsVersion               String?            @db.VarChar
+  maxSupplySnapshot               Decimal?           @db.Decimal(38, 18)
+  miningAllocationPercentSnapshot Decimal?           @db.Decimal(8, 4)
+  rewardPoolTokenAmount           Decimal            @db.Decimal(38, 18)
+  maxEffectiveMpMultiplier        Decimal            @default(2.5) @db.Decimal(8, 6)
+  maxEcosystemBoost               Decimal            @default(0.25) @db.Decimal(8, 6)
+  fullEmissionBaseMpThreshold     Decimal?           @db.Decimal(38, 18)
+  baseMpPerUsdt                   Decimal            @default(1) @db.Decimal(8, 6)
+  rewardTimezone                  String             @default("UTC") @db.VarChar
+  rewardBoundaryHourUtc           Int                @default(0)
+  termsVersion                    String             @default("mining-power-v1-r0") @db.VarChar
+  activationPaused                Boolean            @default(false)
+  emissionPaused                  Boolean            @default(false)
+  payoutProcessingPaused          Boolean            @default(false)
+  claimsPaused                    Boolean            @default(false)
+  effectiveFrom                   DateTime?          @db.Timestamp(6)
+  createdAt                       DateTime           @default(now()) @db.Timestamp(6)
+  updatedAt                       DateTime           @default(now()) @updatedAt @db.Timestamp(6)
+  packages                        MiningPackage[]
+  durations                       MiningDuration[]
+  activations                     MiningActivation[]
+
+  @@index([status], map: "mining_protocol_config_status_idx")
+}
+
+model MiningPackage {
+  id                   String               @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  protocolConfigId     String               @db.VarChar
+  code                 String               @db.VarChar
+  name                 String               @db.VarChar
+  activationAmountUsdt Decimal              @db.Decimal(38, 18)
+  baseMp               Decimal              @db.Decimal(38, 18)
+  packageBoostRate     Decimal              @default(0) @db.Decimal(8, 6)
+  enabled              Boolean              @default(true)
+  sortOrder            Int                  @default(0)
+  createdAt            DateTime             @default(now()) @db.Timestamp(6)
+  updatedAt            DateTime             @default(now()) @updatedAt @db.Timestamp(6)
+  protocolConfig       MiningProtocolConfig @relation(fields: [protocolConfigId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningPackage_protocolConfigId_fkey")
+  activations          MiningActivation[]
+
+  @@unique([protocolConfigId, code], map: "mining_packages_protocol_code_unique")
+  @@index([enabled, sortOrder], map: "mining_packages_enabled_sort_idx")
+  @@index([protocolConfigId], map: "mining_packages_protocol_idx")
+}
+
+model MiningDuration {
+  id               String               @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  protocolConfigId String               @db.VarChar
+  months           Int
+  multiplier       Decimal              @db.Decimal(8, 6)
+  enabled          Boolean              @default(true)
+  createdAt        DateTime             @default(now()) @db.Timestamp(6)
+  updatedAt        DateTime             @default(now()) @updatedAt @db.Timestamp(6)
+  protocolConfig   MiningProtocolConfig @relation(fields: [protocolConfigId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningDuration_protocolConfigId_fkey")
+  activations      MiningActivation[]
+
+  @@unique([protocolConfigId, months], map: "mining_durations_protocol_months_unique")
+  @@index([enabled, months], map: "mining_durations_enabled_months_idx")
+  @@index([protocolConfigId], map: "mining_durations_protocol_idx")
+}
+
+model MiningActivation {
+  id                           String               @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  userId                       String               @db.VarChar
+  protocolConfigId             String               @db.VarChar
+  packageId                    String               @db.VarChar
+  durationId                   String               @db.VarChar
+  activationRequestId          String               @unique(map: "mining_activations_request_unique") @db.VarChar
+  paymentTransactionId         String?              @unique(map: "mining_activations_payment_transaction_unique") @db.VarChar
+  packageCodeSnapshot          String               @db.VarChar
+  packageNameSnapshot          String               @db.VarChar
+  paymentAsset                 String               @db.VarChar
+  paymentAmount                Decimal              @db.Decimal(38, 18)
+  eligibleValueUsdt            Decimal              @db.Decimal(38, 18)
+  activationAmountUsdtSnapshot Decimal              @db.Decimal(38, 18)
+  baseMp                       Decimal              @db.Decimal(38, 18)
+  packageMultiplierSnapshot    Decimal              @db.Decimal(8, 6)
+  durationMultiplierSnapshot   Decimal              @db.Decimal(8, 6)
+  staticWeightedMpSnapshot     Decimal              @db.Decimal(38, 18)
+  durationMonthsSnapshot       Int
+  genesisEligible              Boolean              @default(false)
+  genesisMultiplierSnapshot    Decimal              @default(1) @db.Decimal(8, 6)
+  genesisBoostStartsAt         DateTime?            @db.Timestamp(6)
+  genesisBoostEndsAt           DateTime?            @db.Timestamp(6)
+  paymentConfirmedAt           DateTime?            @db.Timestamp(6)
+  activatedAt                  DateTime?            @db.Timestamp(6)
+  rewardEligibleFrom           DateTime?            @db.Timestamp(6)
+  expiresAt                    DateTime?            @db.Timestamp(6)
+  exitRequestedAt              DateTime?            @db.Timestamp(6)
+  exitedAt                     DateTime?            @db.Timestamp(6)
+  protocolVersion              String               @db.VarChar
+  termsVersion                 String               @db.VarChar
+  status                       String               @default("requested") @db.VarChar
+  createdAt                    DateTime             @default(now()) @db.Timestamp(6)
+  updatedAt                    DateTime             @default(now()) @updatedAt @db.Timestamp(6)
+  user                         User                 @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Cascade, map: "MiningActivation_userId_fkey")
+  protocolConfig               MiningProtocolConfig @relation(fields: [protocolConfigId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningActivation_protocolConfigId_fkey")
+  package                      MiningPackage        @relation(fields: [packageId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningActivation_packageId_fkey")
+  duration                     MiningDuration       @relation(fields: [durationId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningActivation_durationId_fkey")
+  paymentTransaction           Transaction?         @relation("MiningActivationPayment", fields: [paymentTransactionId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningActivation_paymentTransactionId_fkey")
+
+  @@index([userId, status], map: "mining_activations_user_status_idx")
+  @@index([status, rewardEligibleFrom, expiresAt], map: "mining_activations_reward_window_idx")
+  @@index([protocolConfigId], map: "mining_activations_protocol_idx")
+  @@index([packageId], map: "mining_activations_package_idx")
+  @@index([durationId], map: "mining_activations_duration_idx")
 }
