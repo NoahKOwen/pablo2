@@ -3,6 +3,7 @@
 -- using a DO block. Note: `CREATE INDEX CONCURRENTLY` cannot be executed
 -- inside a transaction block (which a DO runs in). If you need to create
 -- the index concurrently, run the suggested psql command separately.
+-- postgres
 DO $$
 BEGIN
 	IF NOT EXISTS (

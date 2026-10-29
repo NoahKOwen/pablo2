@@ -50,7 +50,7 @@ export class ErrorBoundary extends Component<Props, State> {
       }
 
       return (
-        <div className="flex items-center justify-center min-h-[400px] p-4">
+        <div className="flex items-center justify-center min-h-96 p-4">
           <Card className="max-w-md w-full border-destructive/50">
             <CardHeader>
               <div className="flex items-center gap-2">
