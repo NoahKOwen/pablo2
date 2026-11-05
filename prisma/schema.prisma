@@ -494,3 +494,22 @@ model MiningActivation {
   @@index([packageId], map: "mining_activations_package_idx")
   @@index([durationId], map: "mining_activations_duration_idx")
 }
+
+model OutboxEvent {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  type          String    @db.VarChar
+  aggregateType String    @db.VarChar
+  aggregateId   String    @db.VarChar
+  dedupeKey     String    @unique(map: "outbox_events_dedupe_key_unique") @db.VarChar
+  payload       Json
+  status        String    @default("pending") @db.VarChar
+  attemptCount  Int       @default(0)
+  availableAt   DateTime  @default(now()) @db.Timestamp(6)
+  processedAt   DateTime? @db.Timestamp(6)
+  lastError     String?
+  createdAt     DateTime  @default(now()) @db.Timestamp(6)
+  updatedAt     DateTime  @default(now()) @updatedAt @db.Timestamp(6)
+
+  @@index([status, availableAt], map: "outbox_events_status_available_idx")
+  @@index([aggregateType, aggregateId], map: "outbox_events_aggregate_idx")
+}

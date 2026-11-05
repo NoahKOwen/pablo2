@@ -6,6 +6,7 @@ import { ensureDefaultAchievements, prisma } from "./shared";
 import balanceRouter from "./balance";
 import stakingRouter from "./staking";
 import miningRouter from "./mining";
+import miningPowerRouter from "./mining-power";
 import referralsRouter from "./referrals";
 import notificationsRouter, { pushRouter } from "./notifications";
 import leaderboardRouter from "./leaderboard";
@@ -50,6 +51,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.use("/api", balanceRouter);
   app.use("/api/stakes", stakingRouter);
   app.use("/api/mining", miningRouter);
+  app.use("/api/mining-power", miningPowerRouter);
   app.use("/api/referrals", referralsRouter);
   app.use("/api/notifications", notificationsRouter);
   app.use("/api/push", pushRouter);
