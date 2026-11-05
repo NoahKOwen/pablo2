@@ -8,6 +8,7 @@ import usersRouter from "./users";
 import announcementsRouter from "./announcements";
 import achievementsRouter from "./achievements";
 import miningPowerRouter from "./mining-power";
+import miningPowerEmissionsRouter from "./mining-power-emissions";
 import { pushRouter } from "../notifications";
 
 const router = Router();
@@ -29,6 +30,7 @@ router.use("/users", usersRouter);
 router.use("/announcements", announcementsRouter);
 router.use("/achievements", achievementsRouter);
 router.use("/mining-power", miningPowerRouter);
+router.use("/mining-power/emissions", miningPowerEmissionsRouter);
 router.use("/push", pushRouter);
 
 export default router;

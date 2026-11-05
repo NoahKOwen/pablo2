@@ -408,6 +408,7 @@ model MiningProtocolConfig {
   packages                        MiningPackage[]
   durations                       MiningDuration[]
   activations                     MiningActivation[]
+  emissionProgram                MiningEmissionProgram?
 
   @@index([status], map: "mining_protocol_config_status_idx")
 }
@@ -487,6 +488,7 @@ model MiningActivation {
   package                      MiningPackage        @relation(fields: [packageId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningActivation_packageId_fkey")
   duration                     MiningDuration       @relation(fields: [durationId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningActivation_durationId_fkey")
   paymentTransaction           Transaction?         @relation("MiningActivationPayment", fields: [paymentTransactionId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningActivation_paymentTransactionId_fkey")
+  dailyPowerSnapshots          MiningDailyPowerSnapshot[]
 
   @@index([userId, status], map: "mining_activations_user_status_idx")
   @@index([status, rewardEligibleFrom, expiresAt], map: "mining_activations_reward_window_idx")
@@ -512,4 +514,59 @@ model OutboxEvent {
 
   @@index([status, availableAt], map: "outbox_events_status_available_idx")
   @@index([aggregateType, aggregateId], map: "outbox_events_aggregate_idx")
+}
+
+model MiningEmissionProgram {
+  id                               String                @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  protocolConfigId                 String                @unique(map: "mining_emission_program_protocol_unique") @db.VarChar
+  genesisAt                        DateTime              @db.Timestamp(6)
+  termMonths                       Int                   @default(84)
+  rewardPoolTokens                 Decimal               @db.Decimal(38, 18)
+  fullEmissionBaseMpThreshold      Decimal               @db.Decimal(38, 18)
+  status                           String                @default("draft") @db.VarChar
+  calculationVersion               String                @default("mining-power-r3-v1") @db.VarChar
+  createdAt                        DateTime              @default(now()) @db.Timestamp(6)
+  updatedAt                        DateTime              @default(now()) @updatedAt @db.Timestamp(6)
+  protocolConfig                   MiningProtocolConfig  @relation(fields: [protocolConfigId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningEmissionProgram_protocolConfigId_fkey")
+  days                             MiningEmissionDay[]
+
+  @@index([status], map: "mining_emission_program_status_idx")
+}
+
+model MiningEmissionDay {
+  id                            String                 @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  programId                     String                 @db.VarChar
+  dayUtc                        DateTime               @unique(map: "mining_emission_day_utc_unique") @db.Timestamp(6)
+  epochNumber                   Int
+  theoreticalCeiling            Decimal                @db.Decimal(38, 18)
+  qualifiedBaseMp               Decimal                @db.Decimal(38, 18)
+  qualifiedEffectiveMp          Decimal                @db.Decimal(38, 18)
+  qualifiedActivationCount      Int
+  utilizationRatio              Decimal                @db.Decimal(20, 18)
+  reservedEmission              Decimal                @db.Decimal(38, 18)
+  status                        String                 @default("reserved") @db.VarChar
+  calculationVersion            String                 @db.VarChar
+  reservedAt                    DateTime               @default(now()) @db.Timestamp(6)
+  createdAt                     DateTime               @default(now()) @db.Timestamp(6)
+  program                       MiningEmissionProgram  @relation(fields: [programId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningEmissionDay_programId_fkey")
+  snapshots                     MiningDailyPowerSnapshot[]
+
+  @@unique([programId, dayUtc], map: "mining_emission_day_program_day_unique")
+  @@index([programId, dayUtc], map: "mining_emission_day_program_day_idx")
+}
+
+model MiningDailyPowerSnapshot {
+  id                String            @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  emissionDayId     String            @db.VarChar
+  activationId      String            @db.VarChar
+  userId            String            @db.VarChar
+  baseMp            Decimal           @db.Decimal(38, 18)
+  effectiveMp       Decimal           @db.Decimal(38, 18)
+  genesisMultiplier Decimal           @db.Decimal(8, 6)
+  createdAt         DateTime          @default(now()) @db.Timestamp(6)
+  emissionDay       MiningEmissionDay @relation(fields: [emissionDayId], references: [id], onDelete: Cascade, onUpdate: Cascade, map: "MiningDailyPowerSnapshot_emissionDayId_fkey")
+  activation        MiningActivation  @relation(fields: [activationId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningDailyPowerSnapshot_activationId_fkey")
+
+  @@unique([emissionDayId, activationId], map: "mining_daily_mp_day_activation_unique")
+  @@index([emissionDayId, userId], map: "mining_daily_mp_day_user_idx")
 }
