@@ -34,6 +34,8 @@ model User {
   linkedWallets            LinkedWallet[]
   miningSessions           MiningSession[]
   miningActivations        MiningActivation[]
+  miningRewardAllocations   MiningRewardAllocation[]
+  miningRewardLedgers       MiningRewardLedger[]
   notifications            Notification[]
   passwordResets           PasswordReset[]
   pushSubscriptions        PushSubscription[]
@@ -489,6 +491,7 @@ model MiningActivation {
   duration                     MiningDuration       @relation(fields: [durationId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningActivation_durationId_fkey")
   paymentTransaction           Transaction?         @relation("MiningActivationPayment", fields: [paymentTransactionId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningActivation_paymentTransactionId_fkey")
   dailyPowerSnapshots          MiningDailyPowerSnapshot[]
+  rewardAllocations            MiningRewardAllocation[]
 
   @@index([userId, status], map: "mining_activations_user_status_idx")
   @@index([status, rewardEligibleFrom, expiresAt], map: "mining_activations_reward_window_idx")
@@ -550,6 +553,7 @@ model MiningEmissionDay {
   createdAt                     DateTime               @default(now()) @db.Timestamp(6)
   program                       MiningEmissionProgram  @relation(fields: [programId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningEmissionDay_programId_fkey")
   snapshots                     MiningDailyPowerSnapshot[]
+  rewardBatch                   MiningRewardBatch?
 
   @@unique([programId, dayUtc], map: "mining_emission_day_program_day_unique")
   @@index([programId, dayUtc], map: "mining_emission_day_program_day_idx")
@@ -566,7 +570,67 @@ model MiningDailyPowerSnapshot {
   createdAt         DateTime          @default(now()) @db.Timestamp(6)
   emissionDay       MiningEmissionDay @relation(fields: [emissionDayId], references: [id], onDelete: Cascade, onUpdate: Cascade, map: "MiningDailyPowerSnapshot_emissionDayId_fkey")
   activation        MiningActivation  @relation(fields: [activationId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningDailyPowerSnapshot_activationId_fkey")
+  rewardAllocation  MiningRewardAllocation?
 
   @@unique([emissionDayId, activationId], map: "mining_daily_mp_day_activation_unique")
   @@index([emissionDayId, userId], map: "mining_daily_mp_day_user_idx")
+}
+
+model MiningRewardBatch {
+  id                  String                  @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  emissionDayId       String                  @unique(map: "r4_batch_day_unique") @db.VarChar
+  reservedEmission    Decimal                 @db.Decimal(38, 18)
+  allocatedEmission   Decimal                 @db.Decimal(38, 18)
+  unallocatedDust     Decimal                 @db.Decimal(38, 18)
+  settlementDecimals  Int                     @default(9)
+  totalEffectiveMp    Decimal                 @db.Decimal(38, 18)
+  allocationCount     Int
+  status              String                  @default("allocating") @db.VarChar
+  calculationVersion  String                  @default("mining-power-r4-v1") @db.VarChar
+  createdAt           DateTime                @default(now()) @db.Timestamp(6)
+  preparedAt          DateTime?               @db.Timestamp(6)
+  completedAt         DateTime?               @db.Timestamp(6)
+  emissionDay         MiningEmissionDay       @relation(fields: [emissionDayId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningRewardBatch_emissionDayId_fkey")
+  allocations         MiningRewardAllocation[]
+  ledgerEntries       MiningRewardLedger[]
+
+  @@index([status, createdAt], map: "r4_batch_status_idx")
+}
+
+model MiningRewardAllocation {
+  id              String              @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  batchId         String              @db.VarChar
+  powerSnapshotId String              @unique(map: "r4_allocation_snapshot_unique") @db.VarChar
+  activationId    String              @db.VarChar
+  userId          String              @db.VarChar
+  effectiveMp     Decimal             @db.Decimal(38, 18)
+  rewardAmount    Decimal             @db.Decimal(38, 18)
+  status          String              @default("pending") @db.VarChar
+  creditedAt      DateTime?           @db.Timestamp(6)
+  createdAt       DateTime            @default(now()) @db.Timestamp(6)
+  batch           MiningRewardBatch   @relation(fields: [batchId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningRewardAllocation_batchId_fkey")
+  powerSnapshot   MiningDailyPowerSnapshot @relation(fields: [powerSnapshotId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningRewardAllocation_powerSnapshotId_fkey")
+  activation      MiningActivation    @relation(fields: [activationId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningRewardAllocation_activationId_fkey")
+  user            User                @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningRewardAllocation_userId_fkey")
+  ledger          MiningRewardLedger?
+
+  @@unique([batchId, activationId], map: "r4_allocation_batch_activation_unique")
+  @@index([batchId, status, id], map: "r4_allocation_pending_idx")
+  @@index([userId, createdAt], map: "r4_allocation_user_idx")
+}
+
+model MiningRewardLedger {
+  id           String                  @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar
+  allocationId String                  @unique(map: "r4_ledger_allocation_unique") @db.VarChar
+  batchId      String                  @db.VarChar
+  userId       String                  @db.VarChar
+  amount       Decimal                 @db.Decimal(38, 18)
+  source       String                  @default("mining_power_r4") @db.VarChar
+  createdAt    DateTime                @default(now()) @db.Timestamp(6)
+  allocation   MiningRewardAllocation  @relation(fields: [allocationId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningRewardLedger_allocationId_fkey")
+  batch        MiningRewardBatch       @relation(fields: [batchId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningRewardLedger_batchId_fkey")
+  user         User                    @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "MiningRewardLedger_userId_fkey")
+
+  @@index([batchId, createdAt], map: "r4_ledger_batch_idx")
+  @@index([userId, createdAt], map: "r4_ledger_user_idx")
 }
