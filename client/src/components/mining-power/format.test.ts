@@ -1,0 +1,11 @@
+import assert from "node:assert/strict";
+import { displayDecimal, safeSharePercent, utcDate, pctRatio } from "./format.ts";
+assert.equal(displayDecimal("1234567.123456789",9),"1,234,567.123456789");
+assert.equal(displayDecimal("0.00000000001",9),"<0.000000001");
+assert.equal(displayDecimal("0.000000000",9),"0");
+assert.equal(displayDecimal("1e-9"),"—");
+assert.equal(safeSharePercent("25","100"),"25.0000%");
+assert.equal(safeSharePercent("5","0"),null);
+assert.equal(pctRatio("0.1234"),"12.34%");
+assert.ok(utcDate("2026-01-01T00:00:00.000Z").endsWith("UTC"));
+console.log("R5 display-format tests passed");

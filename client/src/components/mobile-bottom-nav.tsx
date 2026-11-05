@@ -4,6 +4,7 @@ import {
   Home,
   Wallet,
   Pickaxe,
+  Zap,
   Gem,
   MoreHorizontal,
   ArrowDownToLine,
@@ -65,6 +66,7 @@ const baseMoreGroups = [
     title: "Account",
     items: [
       { title: "Profile", url: "/profile", icon: User, testId: "more-profile" },
+      { title: "Mining Power", url: "/mining-power", icon: Zap, testId: "more-mining-power" },
       { title: "Rewards", url: "/rewards", icon: Gift, testId: "more-rewards" },
       {
         title: "Achievements",
@@ -226,7 +228,7 @@ export function MobileBottomNav({ onChatOpen }: MobileBottomNavProps) {
                       : "text-muted-foreground hover:bg-primary/5 active:scale-95",
                   )}
                   data-testid={tab.testId}
-                  aria-label={tab.title}
+                  aria-label={tab.url === "/mining" ? "Free XP Mining (24-hour)" : tab.title}
                   aria-current={isActive ? "page" : undefined}
                 >
                   <Icon

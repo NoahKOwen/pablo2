@@ -5,6 +5,7 @@ import {
   ArrowUpFromLine,
   Gem,
   Pickaxe,
+  Zap,
   Users,
   User,
   ListChecks,
@@ -50,7 +51,8 @@ const menuItems = [
     testId: "nav-withdrawal",
   },
   { title: "Staking", url: "/staking", icon: Gem, testId: "nav-staking" },
-  { title: "Mining", url: "/mining", icon: Pickaxe, testId: "nav-mining" },
+  { title: "Free XP Mining", url: "/mining", icon: Pickaxe, testId: "nav-mining" },
+  { title: "Mining Power", url: "/mining-power", icon: Zap, testId: "nav-mining-power" },
   {
     title: "Referrals",
     url: "/referrals",

@@ -49,6 +49,7 @@ const AchievementsPage = lazy(() => import("@/pages/achievements"));
 const RewardsPage = lazy(() => import("@/pages/rewards"));
 const StakingPage = lazy(() => import("@/pages/staking"));
 const MiningPage = lazy(() => import("@/pages/mining"));
+const MiningPowerPage = lazy(() => import("@/pages/mining-power"));
 const ReferralsPage = lazy(() => import("@/pages/referrals"));
 const LeaderboardPage = lazy(() => import("@/pages/leaderboard"));
 const AdminDashboard = lazy(() => import("@/pages/admin/dashboard"));
@@ -107,6 +108,11 @@ const Staking = () => (
 const Mining = () => (
   <Suspense fallback={PageFallback}>
     <MiningPage />
+  </Suspense>
+);
+const MiningPower = () => (
+  <Suspense fallback={PageFallback}>
+    <MiningPowerPage />
   </Suspense>
 );
 const Referrals = () => (
@@ -207,6 +213,7 @@ function AuthenticatedApp() {
                 <Route path="/withdrawal" component={Withdrawal} />
                 <Route path="/staking" component={Staking} />
                 <Route path="/mining" component={Mining} />
+                <Route path="/mining-power" component={MiningPower} />
                 <Route path="/referrals" component={Referrals} />
                 <Route path="/profile" component={Profile} />
                 <Route path="/tasks" component={Tasks} />
